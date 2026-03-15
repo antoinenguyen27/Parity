@@ -1,5 +1,10 @@
 version: 1
 
+# ── Artifact Hint Patterns ─────────────────────────────────────
+# Hint patterns guide Probegen's artifact discovery — they are not filters.
+# The Stage 1 agent always sees all changed files and can inspect any of them.
+# Files matching these patterns are pre-loaded with before/after content for efficiency.
+
 behavior_artifacts:
   paths:
     - "prompts/**"
@@ -15,6 +20,9 @@ behavior_artifacts:
     - "*.test.yaml"
     - "docs/**"
 
+# Guardrail artifacts: LLM judges, output classifiers, validators, rubrics, safety filters.
+# Changes to these files alter how your agent evaluates or constrains its own outputs —
+# often as significant as prompt changes but more rarely tested.
 guardrail_artifacts:
   paths:
     - "judges/**"
@@ -37,25 +45,33 @@ context:
   traces_dir: "context/traces/"
   trace_max_samples: 20
 
+# ── Platform Configuration ─────────────────────────────────────
+# Configure the eval platform(s) you use. Only include platforms
+# where you want Probegen to read coverage and write probes.
 platforms:
   langsmith:
     api_key_env: LANGSMITH_API_KEY
-  braintrust:
-    api_key_env: BRAINTRUST_API_KEY
-    org: "my-org"
-  arize_phoenix:
-    api_key_env: PHOENIX_API_KEY
-    base_url: "https://app.phoenix.arize.com"
-  promptfoo:
-    config_path: "promptfooconfig.yaml"
+
+  # Uncomment to add Braintrust:
+  # braintrust:
+  #   api_key_env: BRAINTRUST_API_KEY
+  #   org: "my-org"
+
+  # Uncomment to add Arize Phoenix:
+  # arize_phoenix:
+  #   api_key_env: PHOENIX_API_KEY
+  #   base_url: "https://app.phoenix.arize.com"
+
+  # Uncomment to add Promptfoo (file-based):
+  # promptfoo:
+  #   config_path: "promptfooconfig.yaml"
 
 mappings:
   - artifact: "prompts/citation_agent/system_prompt.md"
     platform: langsmith
     dataset: "citation-agent-evals"
   - artifact: "agents/planner/**"
-    platform: braintrust
-    project: "PlannerAgent"
+    platform: langsmith
     dataset: "planner-regression"
   - artifact: "judges/citation_quality_rubric.md"
     platform: langsmith
@@ -84,6 +100,12 @@ auto_run:
   fail_on: "regression_guard"
   notify: "pr_comment"
 
+# ── Cost Control ───────────────────────────────────────────────
+# Maximum Anthropic API spend per stage per PR run.
+# Stage 1 (change detection): typically $0.05–0.30
+# Stage 2 (coverage analysis): typically $0.10–0.50
+# Stage 3 (probe generation): typically $0.10–0.60
+# Increase if stages are timing out on large diffs or complex repos.
 budgets:
   stage1_usd: 0.5
   stage2_usd: 0.75

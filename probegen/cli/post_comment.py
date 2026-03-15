@@ -10,6 +10,13 @@ from probegen.errors import GithubApiError
 from probegen.github import find_existing_comment, post_pr_comment, render_pr_comment, update_pr_comment
 from probegen.models import BehaviorChangeManifest, CoverageGapManifest, ProbeProposal
 
+NO_CHANGES_COMMENT = """<!-- probegen-comment -->
+## Probegen: No Behavioral Changes Detected
+
+This PR does not modify any behavior-defining artifacts (prompts, instructions, guardrails, tool descriptions). No eval probes were generated.
+
+If you believe behavioral artifacts were changed and Probegen missed them, check your `behavior_artifacts` hint patterns in `probegen.yaml`."""
+
 
 def _load_optional_manifest(directory: Path, candidates: list[str], model) -> object | None:
     for name in candidates:
@@ -20,11 +27,34 @@ def _load_optional_manifest(directory: Path, candidates: list[str], model) -> ob
 
 
 @click.command("post-comment")
-@click.option("--proposal", "proposal_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--proposal", "proposal_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--no-changes", "no_changes", is_flag=True, help="Post a no-behavioral-changes comment.")
 @click.option("--pr-number", required=True, type=int)
 @click.option("--repo", default=lambda: os.environ.get("GITHUB_REPOSITORY", ""), show_default="GITHUB_REPOSITORY")
 @click.option("--token", default=lambda: os.environ.get("GITHUB_TOKEN", ""), show_default="GITHUB_TOKEN")
-def post_comment_command(proposal_path: Path, pr_number: int, repo: str, token: str) -> None:
+def post_comment_command(
+    proposal_path: Path | None,
+    no_changes: bool,
+    pr_number: int,
+    repo: str,
+    token: str,
+) -> None:
+    if no_changes:
+        try:
+            existing_comment_id = find_existing_comment(pr_number, repo, token)
+            if existing_comment_id is not None:
+                update_pr_comment(existing_comment_id, NO_CHANGES_COMMENT, repo, token)
+            else:
+                post_pr_comment(pr_number, NO_CHANGES_COMMENT, repo, token)
+        except GithubApiError as exc:
+            click.echo(str(exc), err=True)
+            raise SystemExit(1) from exc
+        return
+
+    if proposal_path is None:
+        click.echo("--proposal is required unless --no-changes is set", err=True)
+        raise SystemExit(2)
+
     try:
         proposal = ProbeProposal.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
     except Exception as exc:

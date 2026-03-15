@@ -1,8 +1,8 @@
 # Probegen — Technical Specification
 
-**Version:** 1.0  
-**Status:** Pre-implementation  
-**Audience:** Implementing engineering agent (Codex)
+**Version:** 1.1
+**Status:** Implemented
+**Audience:** Engineers working on or integrating with Probegen
 
 ---
 
@@ -267,7 +267,7 @@ async for message in query(
     options=ClaudeAgentOptions(
         allowed_tools=["Bash", "Read", "Glob"],
         mcp_servers=[],          # no MCP in Stage 1
-        max_turns=30,
+        max_turns=40,
         max_budget_usd=0.50,
         cwd=repo_root,
     )
@@ -277,54 +277,73 @@ async for message in query(
 
 ### Tools Available
 
-**`get_behavior_diff` (probegen tool, called via Bash)**  
-Wraps three data sources into a single structured output:
-- `git diff origin/{base}...HEAD` scoped to behavior-defining paths
-- GitHub PR metadata from `GITHUB_EVENT_PATH` (title, body, labels, author)
-- File content for all changed artifacts (before and after, full content not just diff lines)
+**`Bash`, `Read`, `Glob`** — the agent's primary discovery tools. Stage 1 uses these to:
+- Fetch file content for changed files not pre-loaded: `git show origin/{base}:{path}`, `git diff ... -- {path}`
+- Understand how a changed artifact is used: which agent class imports it, which API route invokes it
+- Inspect Python files for module-level string constants that act as prompts
 
-Returns `RawChangeData` JSON. The agent does not discover changed files through free traversal — it calls this tool first and reasons on the structured result.
+**Prompt receives:**
+- `all_changed_files` — lightweight list of every file changed in the PR (path + change_kind)
+- `hint_matched_artifacts` — full before/after content + diff, pre-loaded for files matching configured hint patterns
+- `hint_patterns` — the configured patterns, presented to the agent as hints, not filters
 
-**`Bash`, `Read`, `Glob`** — for follow-on codebase traversal after initial change detection. Agent uses these to understand how a changed artifact is used: which agent class imports it, which API route invokes that agent, whether multiple agents share the changed prompt.
+The agent starts with pre-loaded hint matches, then reviews `all_changed_files` and fetches any file it judges behaviorally significant. Config patterns guide focus but do not constrain discovery.
 
 ### Stage 1 Prompt Design
 
 ```
 SYSTEM:
-You are a behavioral change analyst for LLM-based agent systems. Your task is to analyze 
-changes to an agent codebase and produce a precise, structured assessment of what changed 
-behaviorally and why.
+You are a behavioral change analyst for LLM-based agent systems.
 
-CONTEXT PACK:
+PRODUCT CONTEXT:
 {product_context}
+
+KNOWN FAILURE MODES:
 {bad_examples}
 
+PR METADATA:
+{pr_metadata_json}
+
+ALL CHANGED FILES IN THIS PR:
+{all_changed_files_json}
+(All files modified, added, or deleted in this PR.)
+
+HINT-PATTERN MATCHES — PRE-LOADED:
+{hint_matched_artifacts_json}
+(Files matching configured hint patterns — pre-loaded with before/after content and diffs.)
+
+CONFIGURED HINT PATTERNS:
+{hint_patterns_json}
+(Patterns your team configured as hints — not a complete list. Behavioral changes may
+appear in files that don't match any pattern.)
+
 PROCESS:
-1. Call get_behavior_diff to retrieve all changed artifacts and PR metadata.
-2. For each changed artifact:
-   a. Classify its type (system_prompt | tool_description | planner_prompt | 
-      retrieval_instruction | output_schema | llm_judge | input_classifier | 
-      output_classifier | tool_validator | safety_classifier | retry_policy | 
-      schema_validator | fallback_prompt)
-   b. Read the before and after content in full.
-   c. Reason about what behavioral change was intended, from the diff alone first.
-   d. Then check whether the PR description confirms or contradicts your inference.
-      If there is a mismatch, flag it explicitly.
-   e. Identify unintended risk flags: what could go wrong that the developer may 
-      not have considered.
-   f. For guardrail artifacts, reason in two directions:
+1. Start with pre-loaded hint-pattern matches. Analyze each for behavioral significance.
+2. Review ALL CHANGED FILES. For any file not pre-loaded that could be behaviorally
+   significant, fetch and inspect it:
+     - Read the file:       Read tool on the current path
+     - Get before content:  Bash: git show origin/{base_branch}:<path>
+     - Get the diff:        Bash: git diff --unified=5 origin/{base_branch}...HEAD -- <path>
+3. Behavioral artifacts include (not limited to): system prompts, tool descriptions,
+   LLM judges, output validators, guardrails, retrieval instructions, retry policies,
+   fallback prompts — any file whose change alters what the LLM agent does or decides.
+4. For Python files: look for module-level string constants that contain prompt-like content.
+5. Classify each behavioral artifact you discover. For each:
+   a. Infer the intended behavioral change from the diff.
+   b. Compare against PR description. Flag contradictions.
+   c. Identify unintended risks: what could go wrong that the developer may not have
+      considered.
+   d. For guardrail artifacts, reason in both directions:
       - False negative risk: what should still be caught that might not be
       - False positive risk: what should still pass through that might be blocked
-3. Detect compound changes: any PR where BOTH a behavior-defining artifact AND a 
-   guardrail artifact changed. Flag these explicitly as highest-risk.
-4. For each changed artifact, traverse the codebase to identify affected components:
-   which agents use this artifact, which routes call those agents, which tools are 
-   invoked by those agents.
-5. Output the BehaviorChangeManifest JSON. No prose. Structured output only.
+6. Detect compound changes: BOTH a behavior-defining artifact AND a guardrail artifact
+   changed in the same PR. Flag these as highest-risk.
+7. Traverse the codebase to identify affected components for each artifact.
+8. Output BehaviorChangeManifest JSON only. No prose.
 
 QUALITY REQUIREMENT:
 "The agent may behave differently in edge cases" is not acceptable output.
-"The citation rule is not scoped to register; conversational queries may now receive 
+"The citation rule is not scoped to register; conversational queries may now receive
 citations where they should not" is acceptable output.
 ```
 
@@ -377,11 +396,12 @@ After Stage 1 completes:
 ```python
 manifest = load_json(".probegen/stage1.json")
 if not manifest["has_changes"]:
-    # Post nothing, exit 0, no downstream stages run
+    # Post a minimal "no behavioral changes detected" comment, then exit 0.
+    # Downstream stages do not run.
     sys.exit(0)
 ```
 
-If `has_changes` is false, the workflow posts no PR comment and stops. This is the path for the majority of PRs.
+If `has_changes` is false, the workflow posts a minimal no-changes comment and stops. This is the path for the majority of PRs. The comment explains that no behavioral artifacts were detected and points to hint pattern configuration if the user believes a change was missed.
 
 ---
 
@@ -1108,15 +1128,7 @@ jobs:
           pip install probegen
           npm install -g @anthropic-ai/claude-code
 
-      - name: Generate MCP config
-        run: probegen setup-mcp
-        env:
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
-
       - name: Stage 1 — Change Detection
-        id: stage1
         run: |
           probegen run-stage 1 \
             --pr-number ${{ github.event.pull_request.number }} \
@@ -1125,12 +1137,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
 
       - name: Check gate
         id: gate
         run: |
           has_changes=$(python -c "
-          import json, sys
+          import json
           m = json.load(open('.probegen/stage1.json'))
           print('true' if m.get('has_changes') else 'false')
           ")
@@ -1144,6 +1157,7 @@ jobs:
             --output .probegen/stage2.json
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
@@ -1158,7 +1172,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Post PR comment
+      - name: Post PR comment (no changes)
+        if: steps.gate.outputs.has_changes == 'false'
+        run: probegen post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (probes)
         if: steps.gate.outputs.has_changes == 'true'
         run: |
           probegen post-comment \
@@ -1171,7 +1191,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: probegen-${{ github.event.pull_request.number }}
+          name: probegen-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: .probegen/
           retention-days: 90
 
@@ -1184,22 +1204,40 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - run: pip install probegen
 
+      - name: Resolve analysis run
+        id: resolve
+        run: |
+          run_id=$(probegen resolve-run-id \
+            --repo ${{ github.repository }} \
+            --workflow-id probegen.yml \
+            --head-sha ${{ github.event.pull_request.head.sha }})
+          echo "run_id=$run_id" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Download probe proposal
         uses: actions/download-artifact@v4
         with:
-          name: probegen-${{ github.event.pull_request.number }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          name: probegen-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: .probegen/
 
       - name: Write probes to platform
         run: |
-          python -m probegen.write_probes \
-            --proposal .probegen/stage3.json
+          probegen write-probes \
+            --proposal .probegen/stage3.json \
+            --config probegen.yaml
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
@@ -1207,6 +1245,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
 ```
 
 ### Non-Blocking Guarantee
@@ -1258,13 +1297,30 @@ Navigate to: Repository → Settings → Secrets and variables → Actions
 | Secret | Required | Source |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | ✅ Required | console.anthropic.com → API Keys |
+| `OPENAI_API_KEY` | ✅ Required for coverage-aware mode | platform.openai.com → API Keys |
 | `LANGSMITH_API_KEY` | If using LangSmith | smith.langchain.com → Settings → API Keys |
 | `BRAINTRUST_API_KEY` | If using Braintrust | braintrust.dev → Settings |
 | `PHOENIX_API_KEY` | If using Arize Phoenix | app.phoenix.arize.com → Settings |
 
 `GITHUB_TOKEN` is provided automatically by GitHub Actions. No action required.
 
-**Step 5: Open a PR**
+**Step 4b: Create the approval label**
+
+```bash
+gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"
+```
+
+This label must exist before anyone can approve probes for writeback. Creating it is a one-time step per repository.
+
+**Step 5: Verify setup**
+
+```bash
+probegen doctor
+```
+
+Checks API keys, hint pattern matches, and context file completeness. Fix any ✗ items before opening your first PR.
+
+**Step 6: Open a PR**
 
 Open any PR touching a behavior-defining or guardrail artifact — any file matched by your `probegen.yaml` `behavior_artifacts.paths` or `guardrail_artifacts.paths`. The `probegen-analyze` job runs automatically.
 
@@ -1468,11 +1524,11 @@ tests:
 | Failure | Behaviour |
 |---|---|
 | Stage 1 Agent SDK timeout | Post comment: "Probegen analysis timed out. No probes generated." Exit 0 (non-blocking). |
-| Stage 1 produces no changes | Silent exit. No PR comment. |
+| Stage 1 produces no changes | Post a minimal no-changes comment ("This PR does not modify any behavior-defining artifacts"). Exit 0. |
 | Stage 2 MCP connection failure | Continue with file-only fallback. Post warning in PR comment: "Could not connect to {platform}. Coverage analysis skipped; probes generated without coverage context." |
 | Stage 2 no dataset mapping | Post comment with specific mapping instructions. Stage 3 still runs without coverage context. |
-| Stage 2 mapped dataset exists but contains zero evals | Switch to bootstrap mode. Post warning in PR comment: "No existing eval cases were found. Probes were generated as starter coverage from the diff and product context." |
-| Stage 2 no eval corpus exists at all | Switch to bootstrap mode. Post warning in PR comment: "No eval corpus was available. Probes were generated as starter coverage from the diff and product context." |
+| Stage 2 mapped dataset exists but contains zero evals | Switch to starter mode. Post warning in PR comment: "No existing eval cases were found. Probes were generated as starter coverage from the diff and product context." |
+| Stage 2 no eval corpus exists at all | Switch to starter mode. Post warning in PR comment: "Running in starter mode — probes are grounded in your diff and product context. Add eval dataset mappings to unlock coverage-aware analysis." |
 | Stage 3 all probes filtered as duplicates | Post comment: "All generated probes were too similar to existing evals. No new coverage gaps identified." |
 | Stage 3 produces < 3 probes after filtering | Post whatever was generated. No minimum enforcement. |
 | Stage 4 write failure | Post comment on merged PR: "Probe write failed: {error}. Probes available at {artifact_path}." Exit non-zero to flag the failure. |
@@ -1517,14 +1573,16 @@ Run `probegen init --context-only` to create a context pack.
 When Stage 2 finds a mapped dataset but no eval cases inside it:
 
 ```markdown
-⚠️ **No existing eval cases found for `citation-agent-evals`**
-
-Probegen switched to bootstrap mode for this artifact. The proposed probes were generated
-from the PR diff, system prompt or guardrail changes, and the available product context.
-
-This is a valid starting point, but novelty detection and boundary analysis get more
-precise once you seed a baseline eval set.
+> ⚠️ **Setup issue:** No eval dataset mapped for `citation-agent-evals` — coverage analysis skipped for this artifact.
 ```
+
+When no corpus exists at all:
+
+```markdown
+> ⚠️ **Starter mode** — Running in starter mode — probes are grounded in your diff and product context. Add eval dataset mappings to unlock coverage-aware analysis.
+```
+
+The internal schema value remains `mode: "bootstrap"`. "Starter mode" is the user-facing label shown in PR comments.
 
 ---
 

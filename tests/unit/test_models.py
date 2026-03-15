@@ -24,7 +24,11 @@ def test_raw_change_data_validates_and_computes_counts() -> None:
             "base_branch": "main",
             "head_sha": "abc123",
             "repo_full_name": "org/repo",
-            "changed_artifacts": [
+            "all_changed_files": [
+                {"path": "prompts/citation.md", "change_kind": "modification"},
+                {"path": "src/config.py", "change_kind": "modification"},
+            ],
+            "hint_matched_artifacts": [
                 {
                     "path": "prompts/citation.md",
                     "artifact_class": "behavior_defining",
@@ -37,14 +41,14 @@ def test_raw_change_data_validates_and_computes_counts() -> None:
                     "after_sha": "sha256:2",
                 }
             ],
-            "unchanged_behavior_artifacts": [],
+            "unchanged_hint_matches": [],
             "has_changes": False,
             "artifact_count": 0,
         }
     )
 
     assert model.has_changes is True
-    assert model.artifact_count == 1
+    assert model.artifact_count == 2  # counts all_changed_files
 
 
 def test_raw_change_data_rejects_invalid_change_kind() -> None:
@@ -57,20 +61,11 @@ def test_raw_change_data_rejects_invalid_change_kind() -> None:
                 "base_branch": "main",
                 "head_sha": "abc",
                 "repo_full_name": "org/repo",
-                "changed_artifacts": [
-                    {
-                        "path": "prompts/x.md",
-                        "artifact_class": "behavior_defining",
-                        "artifact_type": "system_prompt",
-                        "change_kind": "edited",
-                        "before_content": "",
-                        "after_content": "",
-                        "raw_diff": "",
-                        "before_sha": "sha256:1",
-                        "after_sha": "sha256:2",
-                    }
+                "all_changed_files": [
+                    {"path": "prompts/x.md", "change_kind": "edited"},
                 ],
-                "unchanged_behavior_artifacts": [],
+                "hint_matched_artifacts": [],
+                "unchanged_hint_matches": [],
                 "has_changes": True,
                 "artifact_count": 1,
             }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import click
 
+from probegen.cli.doctor_cmd import doctor_command
 from probegen.cli.embed_batch import embed_batch_command
 from probegen.cli.find_similar import find_similar_command
 from probegen.cli.get_behavior_diff import get_behavior_diff_command
@@ -18,6 +19,7 @@ def cli() -> None:
     """Probegen command group."""
 
 
+cli.add_command(doctor_command)
 cli.add_command(embed_batch_command)
 cli.add_command(find_similar_command)
 cli.add_command(get_behavior_diff_command)

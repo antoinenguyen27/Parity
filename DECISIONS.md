@@ -1,5 +1,37 @@
 # Decisions
 
+## 2026-03-16
+
+### Question
+Should config glob patterns act as mandatory filters for which files the Stage 1 agent sees, or as hints that guide its discovery?
+
+### Options considered
+1. Keep patterns as pathspec filters passed to `git diff` — agent only sees pre-filtered files.
+2. Pass all changed files to the agent; use patterns only to decide which files to pre-load with full content.
+
+### Choice
+Patterns as hints (option 2).
+
+### Reasoning
+The spec explicitly states Stage 1 uses the Agent SDK because it "encounters the actual codebase and reasons about what it finds." Pattern-as-filter contradicts this: a team storing their system prompt as `src/config.py::SYSTEM_PROMPT = "..."` with no matching glob silently gets zero behavioral analysis. The hint model gives the agent full visibility while preserving the efficiency benefit of pre-loading likely-relevant files. Config patterns are now surfaced to the agent as guidance alongside the full changed-file list.
+
+---
+
+### Question
+Should the PR comment be silent (no post) when Stage 1 detects no behavioral changes, or should it post a minimal acknowledgment?
+
+### Options considered
+1. Post nothing — most noise-free path for PRs that don't touch behavioral artifacts.
+2. Post a minimal "no behavioral changes detected" comment — gives developers confirmation and a route to investigate if Probegen missed something.
+
+### Choice
+Post a minimal no-changes comment.
+
+### Reasoning
+Silent non-posts leave developers unsure whether Probegen ran at all, whether it was misconfigured, or whether it genuinely found nothing. The minimal comment confirms the tool ran successfully and provides a concrete pointer (`behavior_artifacts` hint patterns) if the developer suspects a false negative. The comment is short and informational, not a workflow blocker.
+
+---
+
 ## 2026-03-14
 
 ### Question

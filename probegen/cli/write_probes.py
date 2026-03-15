@@ -165,6 +165,7 @@ def write_probes_command(proposal_path: Path, config_path: Path) -> None:
     repo = os.environ.get("GITHUB_REPOSITORY")
     token = os.environ.get("GITHUB_TOKEN")
     pr_number = os.environ.get("PR_NUMBER")
+    run_id = os.environ.get("GITHUB_RUN_ID")
     if repo and token and pr_number and (outcome.total_written > 0 or outcome.failures):
         try:
             body = render_results_comment(
@@ -180,6 +181,7 @@ def write_probes_command(proposal_path: Path, config_path: Path) -> None:
                 ]
                 if outcome.failures
                 else None,
+                run_id=run_id,
             )
             post_pr_comment(int(pr_number), body, repo, token)
         except GithubApiError:

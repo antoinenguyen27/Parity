@@ -204,13 +204,6 @@ jobs:
           pip install probegen
           npm install -g @anthropic-ai/claude-code
 
-      - name: Generate MCP config
-        run: probegen setup-mcp
-        env:
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
-
       - name: Stage 1 — Change Detection
         run: |
           probegen run-stage 1 \\
@@ -240,6 +233,7 @@ jobs:
             --output .probegen/stage2.json
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
@@ -254,7 +248,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Post PR comment
+      - name: Post PR comment (no changes)
+        if: steps.gate.outputs.has_changes == 'false'
+        run: probegen post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (probes)
         if: steps.gate.outputs.has_changes == 'true'
         run: |
           probegen post-comment \\
@@ -320,6 +320,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
 """
 
 
@@ -465,11 +466,11 @@ def init_command(context_only: bool, dry_run: bool) -> None:
             return
 
         behavior = _confirm_list(
-            "1. Detected these likely behavior-defining artifacts:",
+            "1. Detected these likely behavior-defining artifacts (hint patterns to help Probegen focus faster):",
             scan_behavior_artifacts(root),
         )
         guardrails = _confirm_list(
-            "2. Detected these likely guardrail artifacts:",
+            "2. Detected these likely guardrail artifacts (hint patterns for judges, validators, classifiers):",
             scan_guardrail_artifacts(root),
         )
         platforms = _selected_platforms()
@@ -524,6 +525,15 @@ def init_command(context_only: bool, dry_run: bool) -> None:
 
         if create_context:
             _create_context_stubs(root, dry_run=dry_run)
+
+        click.echo("")
+        click.echo("Setup complete. Next steps:")
+        click.echo("  1. Fill in context/ files with product details and known failure modes.")
+        click.echo("  2. Add GitHub secrets: ANTHROPIC_API_KEY, OPENAI_API_KEY (+ eval platform keys).")
+        click.echo("  3. Create the approval label in GitHub:")
+        click.echo('       gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"')
+        click.echo("  4. Commit probegen.yaml, .github/workflows/probegen.yml, and context/.")
+        click.echo("  5. Run `probegen doctor` to verify your setup.")
     except click.Abort as exc:
         raise SystemExit(1) from exc
 

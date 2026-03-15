@@ -77,9 +77,9 @@ def test_render_pr_comment_reports_bootstrap_mode_without_eval_corpus() -> None:
 
     comment = render_pr_comment(proposal, stage1_manifest=manifest, stage2_manifest=bootstrap_gaps)
 
-    assert "Bootstrap mode" in comment
+    assert "Starter mode" in comment
     assert "contains no eval cases yet" in comment
-    assert "No usable eval corpus was available for comparison" in comment
+    assert "grounded in your diff and product context" in comment
 
 
 def test_render_summary_markdown_lists_probes() -> None:

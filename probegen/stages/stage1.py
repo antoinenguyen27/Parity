@@ -21,9 +21,9 @@ def run_stage1(
 ) -> StageRunResult:
     prompt = render_stage1_prompt(raw_change_data, context)
     options = ClaudeAgentOptions(
-        allowed_tools=["Read", "Glob"],  # Bash excluded: Stage 1 is analysis-only
+        allowed_tools=["Bash", "Read", "Glob"],  # Bash needed: agent uses git show/diff for non-pre-loaded files
         mcp_servers={},
-        max_turns=30,
+        max_turns=40,
         max_budget_usd=config.budgets.stage1_usd,
         cwd=str(cwd or Path.cwd()),
     )

@@ -1,6 +1,6 @@
 # Probegen
 
-Probegen detects behaviorally significant pull request changes in LLM systems and proposes targeted evaluation probes for review before writing them to an evaluation platform.
+Probegen detects behaviorally significant pull request changes in LLM systems and proposes targeted evaluation probes for review before writing them to an evaluation platform. Probegen is **non-blocking** — it runs as a parallel CI job and never prevents PR merges.
 
 ## What it does
 
@@ -8,28 +8,55 @@ Probegen runs in CI on pull requests. It:
 
 1. Detects changes to prompts, instructions, guardrails, validators, tool descriptions, classifiers, retry policies, output schemas, and other agent harness artifacts that are likely to alter agent behavior.
 2. Retrieves nearby evaluation coverage from your existing eval stack when mappings exist.
-3. Falls back to bootstrap probe generation when no eval corpus exists yet.
+3. Falls back to starter probe generation when no eval corpus exists yet.
 4. Generates ranked probe proposals tailored to the specific change, including multi-turn conversational probes when the agent is conversational.
 5. Exports those probes as files and, after explicit approval, writes them to the configured platform.
 
 Probegen is not an eval runner. It generates eval inputs that plug into LangSmith, Braintrust, Arize Phoenix, Promptfoo, or file-based workflows.
 
-Probegen works out of the box even if you have no evals yet. In that case it bootstraps plausible starter probes from the diff, system prompt or guardrails, and whatever product context you provide. The more eval coverage and product detail you give it, the sharper its novelty detection and boundary analysis become.
+Probegen works out of the box even if you have no evals yet. In that case it generates plausible starter probes from the diff, system prompt or guardrails, and whatever product context you provide. The more eval coverage and product detail you give it, the sharper its novelty detection and boundary analysis become.
 
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 22+ for Claude Code / Agent SDK workflows
+- Node.js 22+ — required in CI by the GitHub Action (installed automatically). Only needed locally if running `probegen run-stage` directly.
 - An Anthropic API key
 - An eval platform API key only if you want direct platform integration or automatic writeback
 
-## Setup
+## Quick Start (GitHub Action)
 
 1. Install the package: `pip install probegen`
-2. Run interactive setup: `probegen init`
-3. Fill in the context pack under [context/product.md](context/product.md), [context/users.md](context/users.md), [context/interactions.md](context/interactions.md), [context/good_examples.md](context/good_examples.md), and [context/bad_examples.md](context/bad_examples.md)
-4. Add the required GitHub secrets
-5. Copy or commit [.github/workflows/probegen.yml](.github/workflows/probegen.yml) into the target repository
+2. Run interactive setup: `probegen init` — generates `probegen.yaml`, workflow file, and `context/` stubs
+3. Fill in `context/product.md` and `context/bad_examples.md` (and other context files for best results)
+4. Add GitHub secrets:
+
+   | Secret | Purpose | Where to get it |
+   |---|---|---|
+   | `ANTHROPIC_API_KEY` | Required — powers all three stages | console.anthropic.com → API Keys |
+   | `OPENAI_API_KEY` | Required for coverage-aware mode | platform.openai.com → API Keys |
+   | `LANGSMITH_API_KEY` | If using LangSmith | smith.langchain.com → Settings |
+   | `BRAINTRUST_API_KEY` | If using Braintrust | braintrust.dev → Settings |
+   | `PHOENIX_API_KEY` | If using Arize Phoenix | app.phoenix.arize.com → Settings |
+
+5. Create the approval label in GitHub:
+   ```
+   gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"
+   ```
+6. Commit `probegen.yaml`, `.github/workflows/probegen.yml`, and `context/`.
+7. Open a PR that touches a prompt or guardrail.
+8. Run `probegen doctor` to verify your setup.
+
+## Cost control
+
+Each stage has a configurable Anthropic API spend budget (see `budgets:` in `probegen.yaml`). Typical costs per PR:
+
+- Stage 1 (change detection): $0.05–0.30
+- Stage 2 (coverage analysis): $0.10–0.50
+- Stage 3 (probe generation): $0.10–0.60
+
+Increase budget limits if stages time out on large diffs or complex repos.
+
+## Advanced Configuration
 
 The full configuration reference is available in [probegen.yaml.example](probegen.yaml.example).
 
@@ -39,6 +66,6 @@ If you want to test Probegen against a real LangGraph repo instead of wiring eve
 
 ## Context pack and trace safety
 
-Probegen works without a context pack, but probe quality drops significantly. At minimum, fill in product context and known failure modes. This matters even more in bootstrap mode, where Probegen has no existing eval corpus to compare against.
+Probegen works without a context pack, but probe quality drops significantly. At minimum, fill in product context and known failure modes. This matters even more in starter mode, where Probegen has no existing eval corpus to compare against.
 
 Production traces are never sanitized by the tool. If you add files under `context/traces/`, anonymize them first. Remove names, emails, account IDs, and any other sensitive data before committing them.

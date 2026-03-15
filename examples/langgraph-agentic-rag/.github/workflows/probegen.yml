@@ -34,11 +34,6 @@ jobs:
           pip install probegen
           npm install -g @anthropic-ai/claude-code
 
-      - name: Generate MCP config
-        run: probegen setup-mcp
-        env:
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-
       - name: Stage 1 - Change Detection
         run: |
           probegen run-stage 1 \
@@ -68,6 +63,7 @@ jobs:
             --output .probegen/stage2.json
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
 
       - name: Stage 3 - Probe Generation
@@ -80,7 +76,13 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Post PR comment
+      - name: Post PR comment (no changes)
+        if: steps.gate.outputs.has_changes == 'false'
+        run: probegen post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (probes)
         if: steps.gate.outputs.has_changes == 'true'
         run: |
           probegen post-comment \
@@ -144,3 +146,4 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}

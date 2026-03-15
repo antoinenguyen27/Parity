@@ -19,11 +19,11 @@ probegen get-behavior-diff \
 
 ### Input Sources
 
-**Source 1 — Git diff**
+**Source 1 — Git diff (unfiltered)**
 ```bash
-git diff origin/{base_branch}...HEAD -- {behavior_artifact_paths} {guardrail_artifact_paths}
+git diff origin/{base_branch}...HEAD
 ```
-Run with `--unified=5` (5 lines of context). Full file content for changed files is fetched separately via `git show HEAD:{path}` and `git show origin/{base}:{path}`.
+All changed files in the PR, with no pathspec filtering. Config patterns are used only to decide which files to pre-load (see Source 3). Full file content is fetched separately via `git show HEAD:{path}` and `git show origin/{base}:{path}` — but only for hint-pattern matches (see below).
 
 **Source 2 — GitHub event payload**
 Read from `$GITHUB_EVENT_PATH`. The `pull_request` webhook payload (confirmed schema post-October 2025 changes) provides:
@@ -39,8 +39,8 @@ repository.full_name
 ```
 Note: `author_association` was removed from the PR payload in October 2025. Do not reference it.
 
-**Source 3 — Full artifact content**
-For each changed file: full before and after content via `git show`. Not just the diff lines.
+**Source 3 — Pre-loaded hint match content**
+For files matching `behavior_artifacts.paths` or `guardrail_artifacts.paths` patterns: full before and after content via `git show`, plus a unified diff with 5 lines of context. Files that don't match any hint pattern are listed in `all_changed_files` but not pre-loaded — the Stage 1 agent fetches them via Read/Bash tools if it judges them relevant.
 
 ### Output: `RawChangeData` Schema
 
@@ -54,7 +54,11 @@ For each changed file: full before and after content via `git show`. Not just th
   "base_branch": "main",
   "head_sha": "abc123def456",
   "repo_full_name": "org/repo",
-  "changed_artifacts": [
+  "all_changed_files": [
+    { "path": "prompts/citation_agent/system_prompt.md", "change_kind": "modification", "renamed_from": null },
+    { "path": "src/config.py", "change_kind": "modification", "renamed_from": null }
+  ],
+  "hint_matched_artifacts": [
     {
       "path": "prompts/citation_agent/system_prompt.md",
       "artifact_class": "behavior_defining",
@@ -67,13 +71,26 @@ For each changed file: full before and after content via `git show`. Not just th
       "after_sha": "sha256:ddeeff..."
     }
   ],
-  "unchanged_behavior_artifacts": [
+  "hint_patterns": {
+    "behavior_paths": ["prompts/**", "agents/**/*.md"],
+    "guardrail_paths": ["judges/**", "validators/**"],
+    "behavior_python_patterns": ["*_prompt", "*_instruction", "system_*"],
+    "guardrail_python_patterns": ["*_judge*", "*_validator*", "*_classifier*"]
+  },
+  "unchanged_hint_matches": [
     "prompts/planner/planner_prompt.md"
   ],
   "has_changes": true,
-  "artifact_count": 1
+  "artifact_count": 2
 }
 ```
+
+**Field notes:**
+- `all_changed_files` — every file modified, added, deleted, or renamed in the PR. No filtering. `artifact_count` equals `len(all_changed_files)`.
+- `hint_matched_artifacts` — files matching configured hint patterns, pre-loaded with before/after content for efficiency. A subset of `all_changed_files`.
+- `hint_patterns` — the patterns from `probegen.yaml`, passed as agent guidance (not filters).
+- `unchanged_hint_matches` — tracked files matching `behavior_artifacts.paths` that are NOT in this PR. Gives the agent context about what stayed the same.
+- `has_changes` — true if `all_changed_files` is non-empty (any file changed in the PR).
 
 ### Return Codes
 
@@ -84,7 +101,7 @@ For each changed file: full before and after content via `git show`. Not just th
 | 2 | `GITHUB_EVENT_PATH` not set or malformed |
 | 3 | `probegen.yaml` not found or invalid |
 
-When `has_changes` is false, the JSON is still valid and complete — the `changed_artifacts` array is empty. The stage runner reads `has_changes` to determine gate behaviour; it does not treat an empty array as an error.
+When `has_changes` is false, the JSON is still valid and complete — `all_changed_files` is empty. The Stage 1 agent receives it and produces a `BehaviorChangeManifest` with `has_changes: false`, which gates out Stages 2–3. The workflow posts a minimal "no behavioral changes detected" comment instead of the full probe proposal.
 
 ---
 
@@ -119,14 +136,34 @@ Token counting uses `tiktoken` with `cl100k_base` encoding (compatible with Clau
 
 ```python
 def render_stage1_prompt(raw_change_data: dict, context: ContextPack) -> str:
+    pr_metadata = {k: raw_change_data[k] for k in
+        ["pr_number", "pr_title", "pr_body", "pr_labels",
+         "base_branch", "head_sha", "repo_full_name"]}
+    hint_patterns = raw_change_data.get("hint_patterns", {})
+    python_patterns = [
+        *hint_patterns.get("behavior_python_patterns", []),
+        *hint_patterns.get("guardrail_python_patterns", []),
+    ]
     return STAGE1_SYSTEM_TEMPLATE.format(
         product_context=truncate(context.product, 4000),
         bad_examples=truncate(context.bad_examples, 4000),
-        raw_change_data_json=json.dumps(raw_change_data, indent=2),
+        pr_metadata_json=json.dumps(pr_metadata, indent=2),
+        all_changed_files_json=json.dumps(raw_change_data.get("all_changed_files", []), indent=2),
+        hint_matched_artifacts_json=json.dumps(raw_change_data.get("hint_matched_artifacts", []), indent=2),
+        hint_patterns_json=json.dumps(hint_patterns, indent=2),
+        base_branch=raw_change_data.get("base_branch", "main"),
+        python_patterns_hint=", ".join(python_patterns) or "e.g. *_prompt, *_instruction, system_*",
     )
 ```
 
-Stage 1 does NOT receive: users.md, interactions.md, good_examples.md, traces. Only product context and bad examples are relevant for intent analysis.
+Stage 1 does NOT receive: users.md, interactions.md, good_examples.md, traces. Only product context, bad examples, and the structured change data are injected. The agent fetches additional file content via tools (Read, Bash, Glob) as needed.
+
+The Stage 1 prompt passes three tiers of change data to the agent:
+- **`all_changed_files`** — lightweight list of every changed file (path + change_kind). Agent reviews this to decide what to inspect.
+- **`hint_matched_artifacts`** — full content (before/after + diff) pre-loaded for files matching configured hint patterns.
+- **`hint_patterns`** — the configured patterns, presented as hints not filters.
+
+The agent is explicitly instructed to use `Read` and `Bash: git show / git diff` for any file in `all_changed_files` that isn't pre-loaded but looks behaviorally significant.
 
 ### Stage 2 Prompt Rendering
 
@@ -322,12 +359,12 @@ Files in paths containing `judge`, `validator`, `guardrail`, `classifier`, `filt
 
 **Interactive question sequence:**
 ```
-1. Detected these likely behavior-defining artifacts:
+1. Detected these likely behavior-defining artifacts (hint patterns to help Probegen focus faster):
    - prompts/citation_agent/system_prompt.md
    - agents/planner/planner.py (contains: planner_prompt)
    Are these correct? [Y/n/edit]
 
-2. Detected these likely guardrail artifacts:
+2. Detected these likely guardrail artifacts (hint patterns for judges, validators, classifiers):
    - judges/citation_quality.md
    Are these correct? [Y/n/edit]
 
@@ -336,10 +373,21 @@ Files in paths containing `judge`, `validator`, `guardrail`, `classifier`, `filt
 
 4. For artifact 'prompts/citation_agent/system_prompt.md':
    Which dataset contains existing evals for this artifact?
-   (Leave blank if you are starting without evals — probegen will run in bootstrap mode)
+   (Leave blank if you are starting without evals — probegen will run in starter mode)
    Dataset name: _
 
 5. Create a context/ directory with stub files? [Y/n]
+```
+
+After writing config and workflow files, `init` prints:
+```
+Setup complete. Next steps:
+  1. Fill in context/ files with product details and known failure modes.
+  2. Add GitHub secrets: ANTHROPIC_API_KEY, OPENAI_API_KEY (+ eval platform keys).
+  3. Create the approval label in GitHub:
+       gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"
+  4. Commit probegen.yaml, .github/workflows/probegen.yml, and context/.
+  5. Run `probegen doctor` to verify your setup.
 ```
 
 **Outputs:**
@@ -353,7 +401,7 @@ Files in paths containing `judge`, `validator`, `guardrail`, `classifier`, `filt
 
 #### `probegen setup-mcp`
 
-Generate `.claude/mcp_servers.json` from `probegen.yaml` and environment variables.
+Generate `.claude/mcp_servers.json` from `probegen.yaml` and environment variables. Useful for local debugging — the CI workflow does not call this directly; `run-stage` generates the MCP config inline at startup.
 
 ```
 probegen setup-mcp [--config probegen.yaml] [--output .claude/mcp_servers.json]
@@ -417,7 +465,7 @@ probegen run-stage <1|2|3> \
 1. Validates required inputs are present
 2. Loads context pack from paths in `probegen.yaml`
 3. Renders the stage prompt using the appropriate `render_stageN_prompt()` function
-4. Runs `probegen setup-mcp` to refresh `.claude/mcp_servers.json`
+4. Generates `.claude/mcp_servers.json` inline (same logic as `probegen setup-mcp`)
 5. Invokes the Agent SDK `query()` with the rendered prompt and stage-specific options
 6. Streams messages; on each `AssistantMessage`, writes progress to stderr
 7. On `ResultMessage`:
@@ -443,8 +491,9 @@ The GitHub Action checks `run-stage` exit code. Any non-zero code from stage 1 r
 
 #### `probegen post-comment`
 
-Posts the PR comment from a `ProbeProposal.json`. Handles create vs. update logic.
+Posts the PR comment. Two modes:
 
+**With probe proposal (has_changes = true):**
 ```
 probegen post-comment \
   --proposal <path> \
@@ -453,9 +502,54 @@ probegen post-comment \
   [--token <token>]             # defaults to $GITHUB_TOKEN
 ```
 
-See Gap 7 for full comment posting logic.
+**No behavioral changes detected (has_changes = false):**
+```
+probegen post-comment \
+  --no-changes \
+  --pr-number <number> \
+  [--repo <owner/repo>]
+  [--token <token>]
+```
+Posts a minimal comment: "This PR does not modify any behavior-defining artifacts. No eval probes were generated." Includes a note pointing users to `behavior_artifacts` hint patterns if they believe changes were missed.
 
-**Return codes:** 0 success, 1 GitHub API error, 2 invalid proposal JSON.
+Both modes handle create vs. update (find existing comment by marker, update if found). See Gap 7 for full comment posting logic.
+
+**Return codes:** 0 success, 1 GitHub API error, 2 invalid proposal JSON (proposal mode only).
+
+---
+
+#### `probegen doctor`
+
+Validates setup and reports check results. Informational only — always exits 0.
+
+```
+probegen doctor [--config probegen.yaml] [--ci]
+```
+
+**Checks performed:**
+1. `probegen.yaml` exists at config path
+2. Config is valid (no schema errors)
+3. `ANTHROPIC_API_KEY` env var is set
+4. Platform-specific API keys set (only for configured platforms)
+5. `OPENAI_API_KEY` set (only if `mappings:` are configured — needed for coverage-aware embed-batch)
+6. Hint patterns match at least one tracked file each (0 matches = likely misconfigured path)
+7. Key context files (`context/product.md`, `context/bad_examples.md`) exist and are non-empty
+8. `--ci` flag: checks `probegen:approve` label exists via GitHub API (requires `GITHUB_TOKEN`)
+
+Output:
+```
+  ✓ probegen.yaml found
+  ✓ probegen.yaml is valid
+  ✗ ANTHROPIC_API_KEY is set
+  ✓ LANGSMITH_API_KEY is set (langsmith)
+  ✓ Pattern 'prompts/**' matches 3 tracked file(s)
+  ✗ Pattern 'agents/**/*.md' matches 0 tracked file(s)
+  ✓ Context file context/product.md exists and is non-empty
+
+3/7 checks passed.
+```
+
+**Return codes:** Always 0 (informational). Use stderr output to identify issues.
 
 ---
 
@@ -879,7 +973,7 @@ From the Agent SDK documentation (confirmed):
 
 | Stage | `max_budget_usd` | `max_turns` | Justification |
 |---|---|---|---|
-| Stage 1 | 0.50 | 30 | Codebase traversal of typical repo: 10-20 file reads + diff analysis |
+| Stage 1 | 0.50 | 40 | Agent-driven discovery: reviews all changed files, fetches non-pre-loaded ones via Read/Bash tools, plus diff analysis. Higher turn count accommodates larger PRs with many non-hint-matched files. |
 | Stage 2 | 0.75 | 40 | MCP calls (3-5 per platform) + embed tool calls + gap analysis |
 | Stage 3 | 1.00 | 25 | Probe generation is single-pass reasoning, not iterative traversal |
 

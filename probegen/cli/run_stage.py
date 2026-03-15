@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import click
@@ -47,6 +48,16 @@ def run_stage_command(
     except ConfigError as exc:
         click.echo(str(exc), err=True)
         raise SystemExit(5) from exc
+
+    try:
+        ProbegenConfig.load(config_path, allow_missing=False)
+    except ConfigError:
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            click.echo(
+                "probegen: warning: probegen.yaml not found; running with empty artifact detection.\n"
+                "No behavioral changes will be detected until you run `probegen init` and commit the result.",
+                err=True,
+            )
 
     context = load_context_pack(config, repo_root=Path.cwd())
     mcp_payload = generate_mcp_config(config, dict(__import__("os").environ))

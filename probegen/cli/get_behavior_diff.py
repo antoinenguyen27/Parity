@@ -11,7 +11,13 @@ import click
 
 from probegen.config import ProbegenConfig
 from probegen.errors import ConfigError, EventPayloadError, GitDiffError
-from probegen.models.raw_change_data import ChangedArtifact, RawChangeData, content_sha256
+from probegen.models.raw_change_data import (
+    ChangedArtifact,
+    ChangedFile,
+    HintPatterns,
+    RawChangeData,
+    content_sha256,
+)
 
 IGNORED_GIT_SHOW_ERRORS = (
     "does not exist",
@@ -48,30 +54,27 @@ def _read_event_payload(env: dict[str, str] | None = None) -> dict[str, Any]:
     return payload
 
 
-def _list_changed_files(base_branch: str, include_paths: list[str]) -> list[tuple[str, str, str | None]]:
-    pathspecs = [f":(glob){pattern}" for pattern in include_paths] if include_paths else []
+def _list_all_changed_files(base_branch: str) -> list[ChangedFile]:
     output = _run_git(
         [
             "diff",
             "--name-status",
             "--find-renames",
             f"origin/{base_branch}...HEAD",
-            "--",
-            *pathspecs,
         ]
     )
-    changed: list[tuple[str, str, str | None]] = []
+    changed: list[ChangedFile] = []
     for line in output.splitlines():
         if not line.strip():
             continue
         parts = line.split("\t")
         status = parts[0]
         if status.startswith("R") and len(parts) >= 3:
-            changed.append(("rename", parts[2], parts[1]))
+            changed.append(ChangedFile(path=parts[2], change_kind="rename", renamed_from=parts[1]))
         else:
             path = parts[-1]
             mapping = {"A": "addition", "M": "modification", "D": "deletion"}
-            changed.append((mapping.get(status[0], "modification"), path, None))
+            changed.append(ChangedFile(path=path, change_kind=mapping.get(status[0], "modification")))
     return changed
 
 
@@ -135,7 +138,17 @@ def _artifact_class(path: str, config: ProbegenConfig) -> str:
     return "behavior_defining"
 
 
-def _list_unchanged_behavior_artifacts(config: ProbegenConfig, changed_paths: set[str]) -> list[str]:
+def _matches_hint_patterns(path: str, config: ProbegenConfig) -> bool:
+    all_patterns = [*config.behavior_artifacts.paths, *config.guardrail_artifacts.paths]
+    if not all_patterns:
+        return False
+    for pattern in config.behavior_artifacts.exclude:
+        if fnmatch.fnmatch(path, pattern):
+            return False
+    return any(fnmatch.fnmatch(path, pattern) for pattern in all_patterns)
+
+
+def _list_unchanged_hint_matches(config: ProbegenConfig, changed_paths: set[str]) -> list[str]:
     if not config.behavior_artifacts.paths:
         return []
     tracked = _run_git(["ls-files"]).splitlines()
@@ -164,21 +177,24 @@ def build_raw_change_data(
         raise ConfigError(str(exc)) from exc
 
     payload = _read_event_payload(env)
-    include_paths = [*config.behavior_artifacts.paths, *config.guardrail_artifacts.paths]
-    changed_files = _list_changed_files(base_branch, include_paths)
-    changed_artifacts: list[ChangedArtifact] = []
+    all_changed_files = _list_all_changed_files(base_branch)
+    hint_matched_artifacts: list[ChangedArtifact] = []
 
-    for change_kind, path, original_path in changed_files:
-        artifact_class = _artifact_class(path, config)
-        before_path = original_path or path
+    for changed_file in all_changed_files:
+        if not _matches_hint_patterns(changed_file.path, config):
+            continue
+        change_kind = changed_file.change_kind
+        original_path = changed_file.renamed_from
+        artifact_class = _artifact_class(changed_file.path, config)
+        before_path = original_path or changed_file.path
         before_content = "" if change_kind == "addition" else _git_show(f"origin/{base_branch}", before_path)
-        after_content = "" if change_kind == "deletion" else _git_show("HEAD", path)
-        raw_diff = _git_file_diff(base_branch, path, original_path)
-        changed_artifacts.append(
+        after_content = "" if change_kind == "deletion" else _git_show("HEAD", changed_file.path)
+        raw_diff = _git_file_diff(base_branch, changed_file.path, original_path)
+        hint_matched_artifacts.append(
             ChangedArtifact(
-                path=path,
+                path=changed_file.path,
                 artifact_class=artifact_class,
-                artifact_type=_classify_artifact_path(path, config),
+                artifact_type=_classify_artifact_path(changed_file.path, config),
                 change_kind=change_kind,  # type: ignore[arg-type]
                 before_content=before_content,
                 after_content=after_content,
@@ -188,7 +204,14 @@ def build_raw_change_data(
             )
         )
 
-    changed_paths = {artifact.path for artifact in changed_artifacts if artifact.artifact_class == "behavior_defining"}
+    hint_patterns = HintPatterns(
+        behavior_paths=list(config.behavior_artifacts.paths),
+        guardrail_paths=list(config.guardrail_artifacts.paths),
+        behavior_python_patterns=list(config.behavior_artifacts.python_patterns),
+        guardrail_python_patterns=list(config.guardrail_artifacts.python_patterns),
+    )
+
+    changed_paths = {f.path for f in all_changed_files}
     pull_request = payload["pull_request"]
     data = RawChangeData(
         pr_number=pr_number,
@@ -198,10 +221,12 @@ def build_raw_change_data(
         base_branch=base_branch,
         head_sha=pull_request.get("head", {}).get("sha", ""),
         repo_full_name=payload["repository"].get("full_name", ""),
-        changed_artifacts=changed_artifacts,
-        unchanged_behavior_artifacts=_list_unchanged_behavior_artifacts(config, changed_paths),
-        has_changes=bool(changed_artifacts),
-        artifact_count=len(changed_artifacts),
+        all_changed_files=all_changed_files,
+        hint_matched_artifacts=hint_matched_artifacts,
+        hint_patterns=hint_patterns,
+        unchanged_hint_matches=_list_unchanged_hint_matches(config, changed_paths),
+        has_changes=bool(all_changed_files),
+        artifact_count=len(all_changed_files),
     )
     return data
 

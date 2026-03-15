@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -180,14 +181,42 @@ def render_pr_comment(
         )
         lines.extend([f"- {flag}" for flag in change.unintended_risk_flags] or ["- No explicit risk flags surfaced."])
         lines.append("")
+
+    # Warnings appear before Analysis Mode for visibility
+    if stage2_manifest is not None and stage2_manifest.unmapped_artifacts:
+        lines.extend(
+            [
+                "### Warnings",
+                *[
+                    f"> ⚠️ **Setup issue:** No eval dataset mapped for `{artifact}` — coverage analysis skipped for this artifact."
+                    for artifact in stage2_manifest.unmapped_artifacts
+                ],
+                "",
+            ]
+        )
+    elif coverage_summary is not None and coverage_summary.mode == "bootstrap":
+        lines.extend(
+            [
+                "### Warnings",
+                "> ⚠️ **Starter mode** — Running in starter mode — probes are grounded in your diff and product context. Add eval dataset mappings to unlock coverage-aware analysis.",
+                "",
+            ]
+        )
+
     if coverage_summary is not None:
-        lines.extend(["### Coverage Mode"])
+        lines.extend(["### Analysis Mode"])
         if coverage_summary.mode == "bootstrap":
             reason = coverage_summary.bootstrap_reason or "No existing eval corpus was available."
+            extra_note = ""
+            if stage2_manifest is not None and stage2_manifest.unmapped_artifacts:
+                extra_note = (
+                    "\n- If you have `platforms:` configured in `probegen.yaml`, verify that the corresponding"
+                    " API key secret is set in your repository's GitHub Actions secrets."
+                )
             lines.extend(
                 [
-                    f"- Bootstrap mode: {reason}",
-                    "- Probes below are plausible starter evals grounded in the diff and available product context.",
+                    f"- Starter mode: {reason}",
+                    f"- Probes below are plausible starter evals grounded in the diff and available product context.{extra_note}",
                     "",
                 ]
             )
@@ -201,25 +230,6 @@ def render_pr_comment(
                     "",
                 ]
             )
-    if stage2_manifest is not None and stage2_manifest.unmapped_artifacts:
-        lines.extend(
-            [
-                "### Warnings",
-                *[
-                    f"- No eval dataset mapped for `{artifact}`; coverage analysis may be incomplete."
-                    for artifact in stage2_manifest.unmapped_artifacts
-                ],
-                "",
-            ]
-        )
-    elif coverage_summary is not None and coverage_summary.mode == "bootstrap":
-        lines.extend(
-            [
-                "### Warnings",
-                "- No usable eval corpus was available for comparison; add dataset mappings or seed baseline evals to improve novelty detection and boundary analysis.",
-                "",
-            ]
-        )
     lines.extend(
         [
             f"### Proposed Probes ({proposal.probe_count})",
@@ -246,7 +256,7 @@ def render_pr_comment(
     lines.extend(
         [
             "",
-            "**To approve all probes:** Add label `probegen:approve` to this PR.  ",
+            "**To approve all probes:** Add label `probegen:approve` to this PR **before merging**.  ",
             f"**Full proposal + rationale:** `{proposal.export_formats.raw_json or '.probegen/ProbeProposal.json'}`  ",
             f"**Promptfoo export:** `{proposal.export_formats.promptfoo or '.probegen/probes.yaml'}`",
         ]
@@ -261,7 +271,9 @@ def render_results_comment(
     passed: int | None = None,
     failed: int | None = None,
     failures: list[dict[str, str]] | None = None,
+    run_id: str | None = None,
 ) -> str:
+    repo = os.environ.get("GITHUB_REPOSITORY")
     lines = [
         PROBEGEN_RESULTS_MARKER,
         "## Probegen: Probes Added + Results",
@@ -273,6 +285,10 @@ def render_results_comment(
         lines.append("**No probes were written.**")
         if dataset_name:
             lines.append(f"**Targets attempted:** `{dataset_name}`")
+        if failures and run_id and repo:
+            lines.append(
+                f"\n**Probe files available:** [View in Actions artifacts](https://github.com/{repo}/actions/runs/{run_id})"
+            )
     if passed is not None and failed is not None:
         lines.append(f"**Auto-run completed:** {passed} passed, {failed} failed")
     if failures:

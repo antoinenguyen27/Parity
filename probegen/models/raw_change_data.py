@@ -15,6 +15,19 @@ def content_sha256(content: str) -> str:
     return f"sha256:{sha256(content.encode('utf-8')).hexdigest()}"
 
 
+class ChangedFile(ProbegenModel):
+    path: str
+    change_kind: ChangeKind
+    renamed_from: str | None = None
+
+
+class HintPatterns(ProbegenModel):
+    behavior_paths: list[str] = Field(default_factory=list)
+    guardrail_paths: list[str] = Field(default_factory=list)
+    behavior_python_patterns: list[str] = Field(default_factory=list)
+    guardrail_python_patterns: list[str] = Field(default_factory=list)
+
+
 class ChangedArtifact(ProbegenModel):
     path: str
     artifact_class: ArtifactClass
@@ -36,14 +49,16 @@ class RawChangeData(ProbegenModel):
     base_branch: str
     head_sha: str
     repo_full_name: str
-    changed_artifacts: list[ChangedArtifact] = Field(default_factory=list)
-    unchanged_behavior_artifacts: list[str] = Field(default_factory=list)
+    all_changed_files: list[ChangedFile] = Field(default_factory=list)
+    hint_matched_artifacts: list[ChangedArtifact] = Field(default_factory=list)
+    hint_patterns: HintPatterns = Field(default_factory=HintPatterns)
+    unchanged_hint_matches: list[str] = Field(default_factory=list)
     has_changes: bool = False
     artifact_count: int = 0
 
     @model_validator(mode="after")
     def validate_counts(self) -> "RawChangeData":
-        if self.has_changes != bool(self.changed_artifacts):
-            self.has_changes = bool(self.changed_artifacts)
-        self.artifact_count = len(self.changed_artifacts)
+        if self.has_changes != bool(self.all_changed_files):
+            self.has_changes = bool(self.all_changed_files)
+        self.artifact_count = len(self.all_changed_files)
         return self

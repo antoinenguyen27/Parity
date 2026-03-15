@@ -12,7 +12,7 @@ This quickstart gives you a real end-to-end Probegen exercise:
 
 This example is based on LangGraph's agentic RAG pattern, but simplified so the evaluation story is the main event.
 
-This quickstart intentionally uses a seeded LangSmith dataset so you can observe Probegen's coverage-aware mode. Probegen does not require an existing eval corpus to run; without one, it falls back to bootstrap mode and proposes starter evals from the diff and context pack.
+This quickstart intentionally uses a seeded LangSmith dataset so you can observe Probegen's coverage-aware mode. Probegen does not require an existing eval corpus to run; without one, it runs in starter mode and proposes starter evals from the diff and context pack.
 
 ## Why this example
 
@@ -92,10 +92,13 @@ In your GitHub repo, go to **Settings → Secrets and variables → Actions → 
 
 - `ANTHROPIC_API_KEY`
 - `LANGSMITH_API_KEY`
+- `OPENAI_API_KEY` — required for Probegen's coverage-aware mode (used by `embed-batch` to compare probe candidates against the seeded LangSmith dataset)
 
-You do not need `OPENAI_API_KEY` for the Probegen CI workflow because Probegen does not run the app itself.
-
-Then create the approval label. Go to **Issues → Labels → New label** and create a label named exactly `probegen:approve` (any color). Probegen's merge-time workflow only fires when a PR is merged with this label — GitHub does not create unknown labels automatically, so you must create it before running the demo.
+Then create the approval label:
+```bash
+gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"
+```
+Or go to **Issues → Labels → New label** and create a label named exactly `probegen:approve`. Probegen's merge-time workflow only fires when a PR is merged with this label — GitHub does not create unknown labels automatically, so you must create it before running the demo.
 
 ## Step 4: Review the Probegen config and workflow
 

@@ -31,6 +31,11 @@ def test_get_behavior_diff_against_real_git_repo(tmp_path: Path) -> None:
     prompt_path = prompts_dir / "system_prompt.md"
     prompt_path.write_text("You are a helpful assistant.\n", encoding="utf-8")
 
+    # A file outside hint patterns — should appear in all_changed_files but NOT in hint_matched_artifacts
+    other_path = repo / "src" / "config.py"
+    other_path.parent.mkdir(parents=True)
+    other_path.write_text('SYSTEM_PROMPT = "You are a helper."\n', encoding="utf-8")
+
     config_path = repo / "probegen.yaml"
     config_path.write_text(
         """
@@ -50,12 +55,16 @@ guardrail_artifacts:
     head_sha = _git(repo, "rev-parse", "HEAD")
     _git(repo, "update-ref", "refs/remotes/origin/main", head_sha)
 
+    # Modify the hint-pattern-matched file
     prompt_path.write_text(
         "You are a helpful assistant.\nAlways cite sources when answering factual questions.\n",
         encoding="utf-8",
     )
+    # Also modify the non-pattern file
+    other_path.write_text('SYSTEM_PROMPT = "You are a helpful research assistant."\n', encoding="utf-8")
     _git(repo, "add", str(prompt_path.relative_to(repo)))
-    _git(repo, "commit", "-m", "change prompt")
+    _git(repo, "add", str(other_path.relative_to(repo)))
+    _git(repo, "commit", "-m", "change prompt and config")
     changed_head_sha = _git(repo, "rev-parse", "HEAD")
 
     event_payload = {
@@ -98,10 +107,25 @@ guardrail_artifacts:
 
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
+
+    # all_changed_files contains every changed file (unfiltered)
     assert payload["has_changes"] is True
-    assert payload["artifact_count"] == 1
-    artifact = payload["changed_artifacts"][0]
-    assert artifact["path"] == "prompts/citation_agent/system_prompt.md"
+    all_paths = [f["path"] for f in payload["all_changed_files"]]
+    assert "prompts/citation_agent/system_prompt.md" in all_paths
+    assert "src/config.py" in all_paths
+    assert payload["artifact_count"] == 2
+
+    # hint_matched_artifacts contains only pattern-matched files with content pre-loaded
+    hint_paths = [a["path"] for a in payload["hint_matched_artifacts"]]
+    assert "prompts/citation_agent/system_prompt.md" in hint_paths
+    assert "src/config.py" not in hint_paths
+
+    artifact = next(a for a in payload["hint_matched_artifacts"] if a["path"] == "prompts/citation_agent/system_prompt.md")
     assert artifact["artifact_class"] == "behavior_defining"
     assert artifact["artifact_type"] == "system_prompt"
     assert "Always cite sources" in artifact["after_content"]
+
+    # hint_patterns contains the configured patterns
+    hint_patterns = payload["hint_patterns"]
+    assert "prompts/**" in hint_patterns["behavior_paths"]
+    assert "guardrails/**" in hint_patterns["guardrail_paths"]
