@@ -27,18 +27,18 @@ Probegen works out of the box even if you have no evals yet. In that case it boo
 
 1. Install the package: `pip install probegen`
 2. Run interactive setup: `probegen init`
-3. Fill in the context pack under [context/product.md](/Users/an/Documents/probeGen/context/product.md), [context/users.md](/Users/an/Documents/probeGen/context/users.md), [context/interactions.md](/Users/an/Documents/probeGen/context/interactions.md), [context/good_examples.md](/Users/an/Documents/probeGen/context/good_examples.md), and [context/bad_examples.md](/Users/an/Documents/probeGen/context/bad_examples.md)
+3. Fill in the context pack under [context/product.md](context/product.md), [context/users.md](context/users.md), [context/interactions.md](context/interactions.md), [context/good_examples.md](context/good_examples.md), and [context/bad_examples.md](context/bad_examples.md)
 4. Add the required GitHub secrets
-5. Copy or commit [.github/workflows/probegen.yml](/Users/an/Documents/probeGen/.github/workflows/probegen.yml) into the target repository
+5. Copy or commit [.github/workflows/probegen.yml](.github/workflows/probegen.yml) into the target repository
 
-The full configuration reference is available in [probegen.yaml.example](/Users/an/Documents/probeGen/probegen.yaml.example).
+The full configuration reference is available in [probegen.yaml.example](probegen.yaml.example).
 
 ## Real example quickstart
 
-If you want to test Probegen against a real LangGraph repo instead of wiring everything from scratch, use the in-repo demo under [examples/langgraph-agentic-rag](/Users/an/Documents/probeGen/examples/langgraph-agentic-rag) and follow [docs/langgraph-agentic-rag-quickstart.md](/Users/an/Documents/probeGen/docs/langgraph-agentic-rag-quickstart.md).
+If you want to test Probegen against a real LangGraph repo instead of wiring everything from scratch, use the in-repo demo under [examples/langgraph-agentic-rag](examples/langgraph-agentic-rag) and follow [examples/langgraph-agentic-rag/docs/quickstart.md](examples/langgraph-agentic-rag/docs/quickstart.md).
 
 ## Context pack and trace safety
 
 Probegen works without a context pack, but probe quality drops significantly. At minimum, fill in product context and known failure modes. This matters even more in bootstrap mode, where Probegen has no existing eval corpus to compare against.
 
-Production traces are never sanitized by the tool. If you add files under [context/traces/README.md](/Users/an/Documents/probeGen/context/traces/README.md), anonymize them first. Remove names, emails, account IDs, and any other sensitive data before committing them.
+Production traces are never sanitized by the tool. If you add files under [context/traces/](context/traces/), anonymize them first. Remove names, emails, account IDs, and any other sensitive data before committing them.
