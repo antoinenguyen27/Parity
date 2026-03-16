@@ -50,7 +50,13 @@ PROCESS:
      output_schema | schema_validator | retry_policy | fallback_prompt | unknown
 6. Infer the intended change for each artifact. Compare against PR description. Flag contradictions.
 7. Identify unintended risks, including guardrail false-negative and false-positive shifts.
-8. Output BehaviorChangeManifest JSON only. No prose.
+8. IF YOU FOUND NO BEHAVIORAL CHANGES (no artifacts in your analysis):
+   - Set has_changes to false
+   - Set overall_risk to "low"
+   - Set changes array to empty []
+   - Set compound_change_detected to false
+   - This is a valid, complete response. Return it as JSON.
+9. Output BehaviorChangeManifest JSON only. No prose.
 """
 
 

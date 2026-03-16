@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
+from pydantic.json_schema import model_json_schema
 
 from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
@@ -27,12 +28,24 @@ def run_stage3(
         context,
         max_probes_surfaced=config.generation.max_probes_surfaced,
     )
+
+    # Generate JSON schema for structured output validation
+    output_schema = model_json_schema(
+        ProbeProposal,
+        mode="serialization",
+        by_alias=True,
+    )
+
     options = ClaudeAgentOptions(
         allowed_tools=[],  # Stage 3 is pure generation from prompt context; no tools needed
         mcp_servers={},
         max_turns=25,
         max_budget_usd=config.budgets.stage3_usd,
         cwd=str(cwd or Path.cwd()),
+        output_format={
+            "type": "json_schema",
+            "schema": output_schema,
+        },
     )
     result = asyncio.run(
         run_stage_with_retry(
