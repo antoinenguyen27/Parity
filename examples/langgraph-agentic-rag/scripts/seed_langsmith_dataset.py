@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from langsmith import Client
@@ -8,6 +9,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATASET_NAME = "lilian-weng-rag-baseline"
+
+# Stable namespace for deterministic UUID generation from string IDs.
+# This ensures the same slug always maps to the same UUID across runs,
+# allowing the deduplication logic to work correctly.
+LANGSMITH_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "probegen-langsmith-examples")
 
 EXAMPLES: list[dict[str, Any]] = [
     {
@@ -143,18 +149,25 @@ def main() -> None:
         str(example.id)
         for example in client.list_examples(dataset_id=str(dataset.id), limit=200)
     }
-    pending = [example for example in EXAMPLES if example["id"] not in existing_ids]
+    # Convert string IDs to UUIDs for comparison with existing IDs
+    pending = [
+        example for example in EXAMPLES
+        if str(uuid.uuid5(LANGSMITH_NAMESPACE, example["id"])) not in existing_ids
+    ]
 
     if not pending:
         print(f"Dataset '{DATASET_NAME}' already contains all demo examples.")
         return
+
+    # Convert string IDs to UUIDs for the API call
+    ids = [uuid.uuid5(LANGSMITH_NAMESPACE, e["id"]) for e in pending]
 
     client.create_examples(
         dataset_id=str(dataset.id),
         inputs=[e["inputs"] for e in pending],
         outputs=[e.get("outputs") for e in pending],
         metadata=[e.get("metadata") for e in pending],
-        ids=[e["id"] for e in pending],
+        ids=ids,
     )
     print(f"Added {len(pending)} examples to '{DATASET_NAME}'.")
 
