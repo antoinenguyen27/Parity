@@ -1,57 +1,59 @@
-# Quickstart: Real Probegen Test With A LangGraph Agentic RAG Demo
+# Quickstart: Probegen End-to-End Demo with LangGraph Agentic RAG
 
-This quickstart gives you a real end-to-end Probegen exercise:
+This quickstart walks you through a complete Probegen workflow using a real LangGraph app as the target. By the end you will have:
 
-1. create your own GitHub repo from this example
-2. connect it to LangSmith
-3. confirm the Probegen GitHub Action is in place
-4. open a PR that changes agent behavior across two prompts
-5. inspect the generated gaps and probes
-6. approve and merge the PR
-7. confirm that the approved probes are written back to LangSmith
+1. A working agentic RAG app running locally
+2. A seeded LangSmith baseline eval dataset
+3. A PR that introduces a compound behavioral regression
+4. Probegen's Stage 1–3 artifacts: detected changes, coverage gaps, and proposed probes
+5. Probes written back to LangSmith after merge approval
 
-This example is based on LangGraph's agentic RAG pattern, but simplified so the evaluation story is the main event.
+The LangGraph app is a close implementation of the [LangGraph agentic RAG reference pattern](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_agentic_rag/): an agent that retrieves from Lilian Weng's ML research blog posts, grades document relevance, rewrites queries when retrieval misses, and generates grounded answers.
 
-This quickstart intentionally uses a seeded LangSmith dataset so you can observe Probegen's coverage-aware mode. Probegen does not require an existing eval corpus to run; without one, it runs in starter mode and proposes starter evals from the diff and context pack.
+---
 
-## Why this example
+## How this demo is structured
 
-This repo uses agentic RAG because it gives Probegen more useful evaluation surfaces without adding setup drag:
+The app has one file that matters to Probegen: `app/graph.py`. All agent behavior is defined there as inline Python string constants (`GRADE_PROMPT`, `REWRITE_PROMPT`, `GENERATE_PROMPT`) and as node functions. There are no separate prompt files — this is intentional. It lets Probegen demonstrate that it detects behavioral changes in Python constants, not just in dedicated prompt files.
 
-- retrieval vs conversational routing
-- question rewriting
-- relevance grading
-- grounded answering
-- unsupported-question handling
-- citation boundaries
+The demo patch (`changes/always_cite.patch`) modifies two of those constants in a single PR:
 
-That combination makes it easier to generate multiple high-signal probes from a small prompt change. And because the demo patch touches two prompts — the routing step and the answer step — it also exercises Probegen's compound change detection.
+- **`GRADE_PROMPT`**: relaxes the relevance grader from strict keyword/semantic matching to loose topical/thematic matching with a bias toward "yes" when uncertain
+- **`GENERATE_PROMPT`**: removes both the "say you don't know" instruction and the three-sentence conciseness constraint, replacing them with "provide a thorough and complete answer"
 
-## Getting started: create your own repository
+Each change sounds reasonable in isolation. Together they create a compound regression: the permissive grader lets loosely matched passages through, and the generator then produces verbose confident answers from that weak context instead of admitting uncertainty. Probegen's Stage 1 flags this as a compound change. Stage 2 identifies that the seeded baseline only partially covers the affected behavior. Stage 3 proposes probes targeting the specific gaps.
 
-If you have not yet copied this example into its own GitHub repo, do that first. From the root of the Probegen repository:
-
-```bash
-cp -R examples/langgraph-agentic-rag /tmp/acme-rag-probegen-demo
-cd /tmp/acme-rag-probegen-demo
-git init
-git add .
-git commit -m "Initial LangGraph RAG demo"
-gh repo create acme-rag-probegen-demo --private --source=. --push
-```
-
-If you are already reading this from inside your copied repo, you have completed this step.
+---
 
 ## Prerequisites
 
 - Python 3.11+
-- Node.js 22+
-- a GitHub repo where you can add Actions secrets
-- `OPENAI_API_KEY` for the LangGraph app
-- `ANTHROPIC_API_KEY` for Probegen's generation stages
-- `LANGSMITH_API_KEY` for the eval dataset and merge-time writeback
+- Node.js 22+ (used by the GitHub Actions workflow; installed automatically in CI)
+- Git and the `gh` CLI
+- An OpenAI API key — the app uses `gpt-4.1` for all LLM calls and OpenAI embeddings for the vector store
+- An Anthropic API key — Probegen uses Claude for Stages 1, 2, and 3
+- A LangSmith account and API key — used for the baseline eval dataset and probe writeback
 
-## Step 1: Install dependencies and smoke test the app
+---
+
+## Step 1: Create your own GitHub repository from this example
+
+Probegen runs as a GitHub Actions workflow, so the demo needs to live in its own repo. From the root of the Probegen repository:
+
+```bash
+cp -R examples/langgraph-agentic-rag /tmp/lilian-weng-rag-demo
+cd /tmp/lilian-weng-rag-demo
+git init
+git add .
+git commit -m "Initial LangGraph agentic RAG demo"
+gh repo create lilian-weng-rag-probegen-demo --private --source=. --push
+```
+
+If you are reading this from inside a repo you already copied, skip this step.
+
+---
+
+## Step 2: Install dependencies and smoke-test the app
 
 ```bash
 python -m venv .venv
@@ -60,130 +62,219 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Populate `OPENAI_API_KEY` in `.env` (the other variables can wait until later steps), then run:
+Open `.env` and fill in `OPENAI_API_KEY`. The other variables can wait until later steps. Then run two queries that exercise the two behavioral paths this demo targets:
 
 ```bash
-python -m app.main "How long are exports available after I create one?"
-python -m app.main "Thanks for the help"
+# Factual question — should trigger retrieval and return a grounded answer
+python -m app.main "What does Lilian Weng say about types of reward hacking?"
+
+# Conversational turn — should respond directly without retrieval
+python -m app.main "Thanks, that was helpful"
 ```
 
-Baseline behavior should look like this:
+**Expected baseline behavior:**
 
-- factual product questions retrieve a knowledge-base document and cite it
-- casual conversational replies stay conversational and do not force citations
+- The factual question retrieves from the reward-hacking blog post and returns something like: *"Lilian Weng categorises reward hacking into two types: environment or goal misspecification, and reward tampering."* The answer is concise (three sentences or fewer).
+- The conversational turn gets a direct friendly reply with no retrieval call and no citations.
 
-These two queries are specifically chosen to demonstrate the citation-routing boundary that `changes/proactive_retrieval.patch` targets. The patch removes the conversational retrieval carve-out and adds a proactive-surfacing rule, creating regressions on exactly these two cases.
+These two queries are specifically chosen because the demo patch creates regressions on both: the permissive grader may let unrelated passages through on factual questions, and the verbose generator removes the conciseness guarantee.
 
-## Step 2: Seed the baseline eval dataset in LangSmith
+---
 
-The example expects a LangSmith dataset named `acme-rag-baseline`, which is already wired in [probegen.yaml](../probegen.yaml).
+## Step 3: Seed the baseline eval dataset in LangSmith
 
-Get a LangSmith API key from [smith.langchain.com](https://smith.langchain.com) → Settings → API Keys. Add it to your `.env` file (`LANGSMITH_API_KEY=...`), then run:
+The demo expects a LangSmith dataset named `lilian-weng-rag-baseline`. This is already referenced in `probegen.yaml` under `mappings`. Without it, Stage 2 cannot run in coverage-aware mode and will fall back to starter mode.
+
+Get a LangSmith API key from [smith.langchain.com](https://smith.langchain.com) → Settings → API Keys. Add it to your `.env` file:
+
+```
+LANGSMITH_API_KEY=your_key_here
+LANGSMITH_TRACING=true
+```
+
+Then seed the dataset:
 
 ```bash
 python scripts/seed_langsmith_dataset.py
 ```
 
-This creates a small baseline eval set with factual retrieval coverage and one unsupported-question case, intentionally leaving citation-boundary and proactive-surfacing gaps. The script is idempotent — running it twice will not create duplicates.
+This creates five eval cases in `lilian-weng-rag-baseline`:
 
-## Step 3: Configure GitHub secrets and create the approval label
+| ID | What it tests |
+|---|---|
+| `lilian-reward-hacking-types` | Factual retrieval: two types of reward hacking |
+| `lilian-hallucination-factscore` | Factual retrieval: FActScore methodology |
+| `lilian-diffusion-lumiere` | Factual retrieval: Lumiere vs. cascade approaches |
+| `lilian-reward-sycophancy-followup` | Multi-turn: sycophancy as reward hacking (follow-up) |
+| `lilian-unsupported-moe` | Unsupported question: MoE architectures not in the blog |
 
-In your GitHub repo, go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+The script is idempotent — running it twice does not create duplicates. Verify the dataset in LangSmith before continuing.
 
-- `ANTHROPIC_API_KEY`
-- `LANGSMITH_API_KEY`
-- `OPENAI_API_KEY` — required for Probegen's coverage-aware mode (used by `embed-batch` to compare probe candidates against the seeded LangSmith dataset)
+**What the baseline intentionally leaves uncovered:** Questions that exploit keyword overlap across blog posts (e.g., "temporal" appears in both the hallucination and diffusion-video posts) and questions that test answer length compliance. These are the gaps the demo patch exposes.
+
+---
+
+## Step 4: Configure GitHub secrets and create the approval label
+
+In your GitHub repo, go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret | Required for |
+|---|---|
+| `ANTHROPIC_API_KEY` | Stages 1, 2, and 3 |
+| `OPENAI_API_KEY` | Stage 2 coverage-aware mode (`embed-batch` compares probe candidates against the LangSmith dataset using OpenAI embeddings) |
+| `LANGSMITH_API_KEY` | Stage 2 dataset query and Stage 4 probe writeback |
 
 Then create the approval label:
+
 ```bash
 gh label create "probegen:approve" --color 0075ca --description "Approve Probegen probe writeback"
 ```
-Or go to **Issues → Labels → New label** and create a label named exactly `probegen:approve`. Probegen's merge-time workflow only fires when a PR is merged with this label — GitHub does not create unknown labels automatically, so you must create it before running the demo.
 
-## Step 4: Review the Probegen config and workflow
+Or go to **Issues → Labels → New label** and create a label named exactly `probegen:approve`. Probegen's merge-time workflow (`probegen-write` job) only fires when a PR is merged with this label. GitHub does not create unknown labels automatically.
 
-This example already includes everything Probegen needs — you do not need to create any of these files:
+---
 
-- [probegen.yaml](../probegen.yaml) — tells Probegen which files to watch and where to write probes
-- [.github/workflows/probegen.yml](../.github/workflows/probegen.yml) — the GitHub Actions workflow
-- [context/](../context/) — the context pack Probegen reads to understand the agent
+## Step 5: Review the Probegen config and workflow
 
-The key detail in [probegen.yaml](../probegen.yaml) is the `mappings` section. It wires each prompt file to the `acme-rag-baseline` LangSmith dataset. This is what lets Stage 2 run in coverage-aware mode — it knows which existing eval cases apply to each changed prompt.
+This repo already contains everything Probegen needs. You do not need to create any of these files.
 
-## Step 5: Open a PR that intentionally changes behavior
+**`probegen.yaml`** — the Probegen configuration:
 
-Create a branch and apply the canned patch:
-
-```bash
-git checkout -b demo/proactive-retrieval
-git apply changes/proactive_retrieval.patch
-git commit -am "Make assistant more proactive about surfacing relevant context"
-git push -u origin demo/proactive-retrieval
-gh pr create --title "Make assistant more proactive about surfacing relevant context" --body "Intentional change for Probegen quickstart"
+```yaml
+behavior_artifacts:
+  paths:
+    - "app/**"          # watch all files under app/
+  python_patterns:
+    - "*_PROMPT"        # match module-level constants like GRADE_PROMPT, GENERATE_PROMPT
+    - "*_prompt"
+    - "*_instruction"
+    - "system_*"
+    - "*_template"
 ```
 
-The patch modifies two files:
+The `mappings` section wires `app/graph.py` to the `lilian-weng-rag-baseline` LangSmith dataset. This is what enables Stage 2 to run in coverage-aware mode — it knows which existing eval cases apply to changes in that file.
 
-- [prompts/query_or_respond.md](../prompts/query_or_respond.md): removes the explicit exception that allowed conversational turns to skip retrieval, and strengthens the retrieval bias
-- [prompts/answer.md](../prompts/answer.md): adds a rule to proactively surface related documentation after answering
+```yaml
+mappings:
+  - artifact: "app/graph.py"
+    platform: langsmith
+    dataset: "lilian-weng-rag-baseline"
+```
 
-Both changes are individually plausible (a developer wanting to be more helpful), but together they create non-obvious regressions that Probegen's Stage 1 will detect as a compound change.
+**`.github/workflows/probegen.yml`** — the GitHub Actions workflow with two jobs:
 
-## Step 6: Inspect the generated Probegen artifacts
+- `probegen-analyze`: runs on every PR, executes Stages 1–3, posts a comment, uploads artifacts
+- `probegen-write`: runs on merge when the `probegen:approve` label is present, downloads the Stage 3 artifact and writes probes to LangSmith
 
-When the PR workflow finishes, look for:
+---
 
-- a PR comment from Probegen listing the proposed probes
-- the uploaded workflow artifact containing `.probegen/stage1.json`, `.probegen/stage2.json`, and `.probegen/stage3.json`
+## Step 6: Open the demo PR
 
-Your exact wording will vary, but the shape should resemble:
+Create a branch and apply the demo patch:
 
-- [expected_outputs/stage1.json](../expected_outputs/stage1.json)
-- [expected_outputs/stage2.json](../expected_outputs/stage2.json)
-- [expected_outputs/stage3.json](../expected_outputs/stage3.json)
+```bash
+git checkout -b demo/always-cite
+git apply changes/always_cite.patch
+git commit -am "Relax grading threshold and make answers more thorough"
+git push -u origin demo/always-cite
+gh pr create \
+  --title "Relax grading threshold and make answers more thorough" \
+  --body "Makes the relevance grader more permissive and removes the conciseness constraint from the generator."
+```
 
-What you want to see:
+**What the patch changes in `app/graph.py`:**
 
-- Stage 1 flags `compound_change_detected: true` with two entries in `changes[]`
-- Stage 2 identifies that your existing eval set covers factual retrieval but not conversational routing or proactive-surfacing behavior
-- Stage 3 proposes probes around casual replies, scope-creep on factual answers, and unsupported questions under proactive surfacing
+`GRADE_PROMPT` before:
+> If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. Give a binary score 'yes' or 'no'.
 
-## Step 7: Approve and merge
+`GRADE_PROMPT` after:
+> If the document has **any topical or thematic connection** to the user question, grade it as relevant. **When in doubt, prefer to grade the document as relevant rather than irrelevant.** Give a binary score 'yes' or 'no'.
 
-In the PR sidebar on GitHub, click **Labels** and add the `probegen:approve` label you created in Step 3. Then merge the PR.
+`GENERATE_PROMPT` before:
+> If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise.
 
-The merge-time workflow will:
+`GENERATE_PROMPT` after:
+> Provide a **thorough and complete answer** using all available context.
 
-1. resolve the exact earlier analysis run for the PR head SHA
-2. download the matching `.probegen` artifact from that run
-3. check out the merged repo so `probegen.yaml` is available
-4. write the approved probes into the mapped LangSmith dataset
+Both changes are individually plausible developer decisions. The compound regression — verbose confident answers from loosely matched context — is not obvious from reading either diff in isolation.
 
-## Step 8: Confirm probes were written back to LangSmith
+---
 
-Go to [smith.langchain.com](https://smith.langchain.com), open the `acme-rag-baseline` dataset, and confirm you now see new examples generated by Probegen.
+## Step 7: Inspect the Probegen artifacts
 
-Each written example should include metadata such as:
+When the `probegen-analyze` workflow completes (~2–4 minutes), look for:
 
-- `generated_by: probegen`
-- `probe_type`
-- `probe_id`
-- `source_pr`
+- A PR comment from Probegen listing proposed probes
+- The uploaded workflow artifact containing `.probegen/stage1.json`, `.probegen/stage2.json`, and `.probegen/stage3.json`
 
-## What this quickstart pressure-tests well
+Compare your output against the reference examples in [`expected_outputs/`](../expected_outputs/). The exact wording will differ, but the structure should match:
 
-- compound prompt changes that should create new coverage across multiple components
-- conversational routing regressions
-- proactive-surfacing scope creep
-- unsupported-question honesty under a proactive-surfacing rule
-- end-to-end artifact handoff between PR analysis and merge-time writeback
+**Stage 1 (`stage1.json`)** — should show `compound_change_detected: true` with two entries in `changes[]`:
+- `GRADE_PROMPT` change: `artifact_type: python_variable`, inferred intent is relaxed relevance grading with a permissive bias
+- `GENERATE_PROMPT` change: removed uncertainty admission, removed conciseness constraint
+- The `compound_changes` array explains how the two interact: permissive grading passes weak context to a generator that no longer admits uncertainty
 
-## Good follow-up experiments
+**Stage 2 (`stage2.json`)** — should show `coverage_ratio: 0.4` (2 of 5 baseline cases cover the changed behavior). Three gaps should appear:
+- `gap_001` (uncovered): no case tests the combined failure — permissive grading passes weak context and the generator produces a confident verbose answer instead of admitting uncertainty
+- `gap_002` (boundary_shift): no case tests keyword-overlap misrouting, where a word like "temporal" appears in both the hallucination and diffusion-video posts and triggers the wrong passage under the permissive grader
+- `gap_003` (uncovered): no case asserts answer length compliance now that the three-sentence constraint is removed
 
-- change [prompts/grade.md](../prompts/grade.md) so the relevance grader becomes too permissive — Probegen will detect the changed grading logic as a behavioral change
-- remove the unsupported-question rule from [prompts/answer.md](../prompts/answer.md)
-- add a new knowledge-base document and update [prompts/rewrite.md](../prompts/rewrite.md) to over-index on it
+**Stage 3 (`stage3.json`)** — should propose three probes:
+- A `boundary_probe` targeting keyword-overlap confusion (e.g., a question about temporal attention in transformers, where "temporal" is a false signal that the permissive grader accepts)
+- An `overcorrection_probe` targeting cross-post misrouting (a question where a passage from the wrong blog post could produce a wrong confident answer)
+- A `regression_guard` targeting answer length on a question that previously returned a concise two-sentence response
 
-## Why this demonstrates Probegen better than a hello-world app
+---
 
-The point is not that the LangGraph app is complicated. The point is that a tiny prompt change — one that sounds like an improvement — should create realistic, reviewable, change-coupled eval work. This demo makes that visible with minimal setup noise.
+## Step 8: Approve and merge
+
+Add the `probegen:approve` label to the PR **before merging**. In the PR sidebar on GitHub, click **Labels** and select `probegen:approve`. Then merge the PR.
+
+The `probegen-write` job will:
+
+1. Identify the earlier `probegen-analyze` run for the PR head SHA using `probegen resolve-run-id`
+2. Download the matching `.probegen` artifact from that run
+3. Check out the merged repo so `probegen.yaml` is available
+4. Write the approved probes to `lilian-weng-rag-baseline` in LangSmith
+
+---
+
+## Step 9: Confirm probes were written to LangSmith
+
+Go to [smith.langchain.com](https://smith.langchain.com), open the `lilian-weng-rag-baseline` dataset, and confirm you see new examples added by Probegen.
+
+Each written example will include metadata such as:
+
+```json
+{
+  "generated_by": "probegen",
+  "probe_type": "boundary_probe",
+  "probe_id": "probe_001",
+  "source_pr": "1"
+}
+```
+
+---
+
+## What this demo pressure-tests
+
+- **Compound prompt changes**: two prompt constants changed in one PR; neither change alone predicts the regression
+- **Coverage-aware mode**: Stage 2 has a real baseline to compare against and identifies specific gaps rather than generating from scratch
+- **Python constant detection**: prompts are inline strings in `app/graph.py`, not `.md` files — Probegen finds them via `python_patterns: ["*_PROMPT"]`
+- **Keyword-overlap boundary cases**: the three blog posts share vocabulary (e.g., "temporal") that creates false relevance signals under the permissive grader
+- **End-to-end artifact handoff**: the merge-time job downloads the exact artifact from the PR analysis run, not a recomputed version
+
+---
+
+## Follow-up experiments
+
+- **Change `REWRITE_PROMPT`** to over-index on the most recent question in a multi-turn conversation — Stage 1 will detect it as a query-rewriting behavior change
+- **Remove the `grade_documents` structured output schema** (`GradeDocuments`) and replace with free-text reasoning — Stage 1 will flag the classifier schema removal
+- **Add a fourth blog post URL** to `app/graph.py` and update `GENERATE_PROMPT` to reference it — Stage 1 will detect a compound change in both retrieval scope and generation behavior
+- **Revert the patch after writing probes**, then open a new PR with the same patch — Stage 2 will now find the previously written probes as existing coverage and should propose fewer or more precisely targeted probes, demonstrating the feedback loop
+
+---
+
+## Why this example works better than a hello-world app
+
+A single-prompt hello-world app produces one behavioral change and one probe. The point of this demo is different: a small, individually plausible prompt change should create realistic, compound, change-coupled eval work that is genuinely hard to notice without tooling. This app is just complex enough to make that visible — three blog posts, four graph nodes, three prompt constants — without adding setup drag.
