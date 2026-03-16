@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
+from pydantic.json_schema import model_json_schema
 
 from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
@@ -20,12 +21,24 @@ def run_stage1(
     cwd: str | Path | None = None,
 ) -> StageRunResult:
     prompt = render_stage1_prompt(raw_change_data, context)
+
+    # Generate JSON schema for structured output validation
+    output_schema = model_json_schema(
+        BehaviorChangeManifest,
+        mode="serialization",
+        by_alias=True,
+    )
+
     options = ClaudeAgentOptions(
         allowed_tools=["Bash", "Read", "Glob"],  # Bash needed: agent uses git show/diff for non-pre-loaded files
         mcp_servers={},
         max_turns=40,
         max_budget_usd=config.budgets.stage1_usd,
         cwd=str(cwd or Path.cwd()),
+        output_format={
+            "type": "json_schema",
+            "schema": output_schema,
+        },
     )
     result = asyncio.run(
         run_stage_with_retry(

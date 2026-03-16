@@ -112,7 +112,14 @@ async def _run_query(
         parsed_payload = raw_result if isinstance(raw_result, dict) else json.loads(raw_result or "{}")
         parsed = output_model.model_validate(parsed_payload)
     except Exception as exc:
-        raise SchemaValidationError(f"Stage {stage_num} output failed validation: {exc}") from exc
+        # Capture raw result for debugging: show first 300 chars with escaped newlines
+        truncated_result = (
+            str(raw_result)[:300] if raw_result else "(empty/None)"
+        ).replace("\n", "\\n")
+        raise SchemaValidationError(
+            f"Stage {stage_num} output failed validation: {exc}\n"
+            f"Raw response (first 300 chars): {truncated_result}"
+        ) from exc
 
     return StageRunResult(
         data=parsed,
