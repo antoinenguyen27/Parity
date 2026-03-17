@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -20,6 +22,8 @@ def run_stage2(
     cwd: str | Path | None = None,
     mcp_servers: str | Path | dict | None = None,
 ) -> StageRunResult:
+    run_id = f"stage2-{int(time.time())}"
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prompt = render_stage2_prompt(stage1_manifest)
 
     # Generate JSON schema for structured output validation
@@ -46,6 +50,11 @@ def run_stage2(
             prompt=prompt,
             options=options,
             output_model=CoverageGapManifest,
+            inject_fields={
+                "run_id": run_id,
+                "stage1_run_id": stage1_manifest.get("run_id", ""),
+                "timestamp": timestamp,
+            },
         )
     )
     result.extras = {"prompt_tokens": count_tokens(prompt)}

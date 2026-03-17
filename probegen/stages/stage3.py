@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
@@ -22,6 +24,8 @@ def run_stage3(
     *,
     cwd: str | Path | None = None,
 ) -> StageRunResult:
+    run_id = f"stage3-{int(time.time())}"
+    timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prompt = render_stage3_prompt(
         stage1_manifest,
         stage2_manifest,
@@ -53,6 +57,15 @@ def run_stage3(
             prompt=prompt,
             options=options,
             output_model=ProbeProposal,
+            inject_fields={
+                "run_id": run_id,
+                "stage1_run_id": stage1_manifest.get("run_id", ""),
+                "stage2_run_id": stage2_manifest.get("run_id", ""),
+                "timestamp": timestamp,
+                "pr_number": stage1_manifest.get("pr_number"),
+                "commit_sha": stage1_manifest.get("commit_sha", ""),
+                "probe_count": 0,
+            },
         )
     )
 

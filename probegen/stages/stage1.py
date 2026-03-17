@@ -24,7 +24,7 @@ def run_stage1(
 ) -> StageRunResult:
     run_id = f"stage1-{int(time.time())}"
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    prompt = render_stage1_prompt(raw_change_data, context, run_id=run_id, timestamp=timestamp)
+    prompt = render_stage1_prompt(raw_change_data, context)
 
     # Generate JSON schema for structured output validation
     output_schema = model_json_schema(
@@ -50,6 +50,12 @@ def run_stage1(
             prompt=prompt,
             options=options,
             output_model=BehaviorChangeManifest,
+            inject_fields={
+                "run_id": run_id,
+                "pr_number": raw_change_data.get("pr_number"),
+                "commit_sha": raw_change_data.get("head_sha", ""),
+                "timestamp": timestamp,
+            },
         )
     )
     result.extras = {"prompt_tokens": count_tokens(prompt)}
