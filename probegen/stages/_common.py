@@ -109,7 +109,23 @@ async def _run_query(
         )
 
     try:
-        parsed_payload = raw_result if isinstance(raw_result, dict) else json.loads(raw_result or "{}")
+        # Fast path: if raw_result is already a dict, use it directly
+        if isinstance(raw_result, dict):
+            parsed_payload = raw_result
+        else:
+            # Try standard JSON parsing first
+            try:
+                parsed_payload = json.loads(raw_result or "{}")
+            except json.JSONDecodeError as json_err:
+                # Fallback: attempt to extract JSON from markdown-wrapped output
+                # This handles cases where SDK returns markdown code fences instead of structured output
+                extracted = attempt_partial_extraction(raw_result)
+                if extracted is not None:
+                    parsed_payload = extracted
+                else:
+                    # If extraction also fails, re-raise the original JSON parse error
+                    raise json_err
+
         parsed = output_model.model_validate(parsed_payload)
     except Exception as exc:
         # Capture raw result for debugging: show first 300 chars with escaped newlines
