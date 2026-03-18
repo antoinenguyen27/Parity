@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
-from pydantic.json_schema import model_json_schema
 
 from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
@@ -27,8 +26,7 @@ def run_stage2(
     prompt = render_stage2_prompt(stage1_manifest)
 
     # Generate JSON schema for structured output validation
-    output_schema = model_json_schema(
-        CoverageGapManifest,
+    output_schema = CoverageGapManifest.model_json_schema(
         mode="serialization",
         by_alias=True,
     )
