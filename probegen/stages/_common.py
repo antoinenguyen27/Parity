@@ -119,23 +119,21 @@ async def _run_query(
             cost_usd=result_message.total_cost_usd,
         )
 
+    if result_message.structured_output is None:
+        truncated = str(result_message.result or "")[:300].replace("\n", "\\n")
+        raise SchemaValidationError(
+            f"Stage {stage_num} structured output was not populated "
+            f"(structured_output=None, subtype={result_message.subtype!r}). "
+            f"Ensure betas=['structured-outputs-2025-11-13'] is set and the CLI supports structured output.\n"
+            f"Raw response (first 300 chars): {truncated}"
+        )
+
     try:
-        # Fast path: if raw_result is already a dict, use it directly
+        # structured_output is a validated dict from the SDK
         if isinstance(raw_result, dict):
             parsed_payload = raw_result
         else:
-            # Try standard JSON parsing first
-            try:
-                parsed_payload = json.loads(raw_result or "{}")
-            except json.JSONDecodeError as json_err:
-                # Fallback: attempt to extract JSON from markdown-wrapped output
-                # This handles cases where SDK returns markdown code fences instead of structured output
-                extracted = attempt_partial_extraction(raw_result)
-                if extracted is not None:
-                    parsed_payload = extracted
-                else:
-                    # If extraction also fails, re-raise the original JSON parse error
-                    raise json_err
+            parsed_payload = json.loads(raw_result or "{}")
 
         if inject_fields:
             parsed_payload.update(inject_fields)

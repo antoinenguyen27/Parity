@@ -44,6 +44,7 @@ def run_stage3(
         max_turns=25,
         max_budget_usd=config.budgets.stage3_usd,
         cwd=str(cwd or Path.cwd()),
+        betas=["structured-outputs-2025-11-13"],
         output_format={
             "type": "json_schema",
             "schema": output_schema,
