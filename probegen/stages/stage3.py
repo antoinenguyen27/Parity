@@ -11,8 +11,14 @@ from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
 from probegen.models import CoverageGap, ProbeProposal
 from probegen.prompts.stage3_template import render_stage3_prompt
-from probegen.stages._common import StageRunResult, build_metadata, run_stage_with_retry
+from probegen.stages._common import StageRunResult, build_metadata, run_stage_with_retry, simplify_schema
 from probegen.tools.similarity import apply_diversity_limit, rank_probes
+
+_STAGE3_INJECT_KEYS = {
+    "run_id", "stage1_run_id", "stage2_run_id", "timestamp",
+    "pr_number", "commit_sha", "probe_count", "schema_version",
+    "export_formats", "warnings",
+}
 
 
 def run_stage3(
@@ -32,10 +38,9 @@ def run_stage3(
         max_probes_surfaced=config.generation.max_probes_surfaced,
     )
 
-    # Generate JSON schema for structured output validation
-    output_schema = ProbeProposal.model_json_schema(
-        mode="serialization",
-        by_alias=True,
+    output_schema = simplify_schema(
+        ProbeProposal.model_json_schema(),
+        remove_keys=_STAGE3_INJECT_KEYS,
     )
 
     options = ClaudeAgentOptions(
@@ -44,7 +49,6 @@ def run_stage3(
         max_turns=25,
         max_budget_usd=config.budgets.stage3_usd,
         cwd=str(cwd or Path.cwd()),
-        betas=["structured-outputs-2025-11-13"],
         output_format={
             "type": "json_schema",
             "schema": output_schema,

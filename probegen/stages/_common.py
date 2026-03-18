@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,56 @@ from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage
 from probegen.errors import BudgetExceededError, RateLimitStageError, SchemaValidationError, StageError
 
 ModelT = TypeVar("ModelT")
+
+_SUPPORTED_KEYS = {"type", "properties", "required", "items", "enum", "const", "$ref", "$defs"}
+
+
+def simplify_schema(schema: dict, *, remove_keys: set[str] | None = None) -> dict:
+    """Return a schema containing only Agent SDK CLI-supported keywords.
+
+    Strips unsupported keywords (additionalProperties, title, default, format, anyOf),
+    dereferences $defs/$ref, and removes inject_fields keys from properties/required
+    so the CLI does not expect the agent to produce orchestrator-owned values.
+    """
+    schema = copy.deepcopy(schema)
+    defs = schema.pop("$defs", {})
+
+    def resolve(obj: Any) -> Any:
+        if isinstance(obj, list):
+            return [resolve(item) for item in obj]
+        if not isinstance(obj, dict):
+            return obj
+
+        # Inline $ref
+        if "$ref" in obj and len(obj) == 1:
+            ref_name = obj["$ref"].split("/")[-1]
+            return resolve(copy.deepcopy(defs.get(ref_name, {})))
+
+        # Resolve anyOf: [{X}, {type: null}] → X; complex → unconstrained {}
+        if "anyOf" in obj:
+            non_null = [v for v in obj["anyOf"] if v.get("type") != "null"]
+            if len(non_null) == 1:
+                return resolve(non_null[0])
+            return {}
+
+        result = {k: v for k, v in obj.items() if k in _SUPPORTED_KEYS}
+        if "properties" in result:
+            result["properties"] = {k: resolve(v) for k, v in result["properties"].items()}
+        if "items" in result:
+            result["items"] = resolve(result["items"])
+        if "$defs" in result:
+            result["$defs"] = {k: resolve(v) for k, v in result["$defs"].items()}
+        return result
+
+    simplified = resolve(schema)
+
+    if remove_keys and isinstance(simplified.get("properties"), dict):
+        for key in remove_keys:
+            simplified["properties"].pop(key, None)
+        if "required" in simplified:
+            simplified["required"] = [k for k in simplified["required"] if k not in remove_keys]
+
+    return simplified
 
 
 @dataclass(slots=True)
@@ -124,7 +175,7 @@ async def _run_query(
         raise SchemaValidationError(
             f"Stage {stage_num} structured output was not populated "
             f"(structured_output=None, subtype={result_message.subtype!r}). "
-            f"Ensure betas=['structured-outputs-2025-11-13'] is set and the CLI supports structured output.\n"
+            f"The CLI did not enforce the JSON schema — check schema compatibility with the Agent SDK.\n"
             f"Raw response (first 300 chars): {truncated}"
         )
 

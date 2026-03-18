@@ -11,7 +11,9 @@ from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
 from probegen.models import BehaviorChangeManifest
 from probegen.prompts.stage1_template import render_stage1_prompt
-from probegen.stages._common import StageRunResult, run_stage_with_retry
+from probegen.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
+
+_STAGE1_INJECT_KEYS = {"run_id", "pr_number", "commit_sha", "timestamp", "schema_version"}
 
 
 def run_stage1(
@@ -25,10 +27,9 @@ def run_stage1(
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prompt = render_stage1_prompt(raw_change_data, context)
 
-    # Generate JSON schema for structured output validation
-    output_schema = BehaviorChangeManifest.model_json_schema(
-        mode="serialization",
-        by_alias=True,
+    output_schema = simplify_schema(
+        BehaviorChangeManifest.model_json_schema(),
+        remove_keys=_STAGE1_INJECT_KEYS,
     )
 
     options = ClaudeAgentOptions(
@@ -37,7 +38,6 @@ def run_stage1(
         max_turns=40,
         max_budget_usd=config.budgets.stage1_usd,
         cwd=str(cwd or Path.cwd()),
-        betas=["structured-outputs-2025-11-13"],
         output_format={
             "type": "json_schema",
             "schema": output_schema,

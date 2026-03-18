@@ -11,7 +11,9 @@ from probegen.config import ProbegenConfig
 from probegen.context import count_tokens
 from probegen.models import CoverageGapManifest
 from probegen.prompts.stage2_template import render_stage2_prompt
-from probegen.stages._common import StageRunResult, run_stage_with_retry
+from probegen.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
+
+_STAGE2_INJECT_KEYS = {"run_id", "stage1_run_id", "timestamp", "schema_version"}
 
 
 def run_stage2(
@@ -25,10 +27,9 @@ def run_stage2(
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prompt = render_stage2_prompt(stage1_manifest)
 
-    # Generate JSON schema for structured output validation
-    output_schema = CoverageGapManifest.model_json_schema(
-        mode="serialization",
-        by_alias=True,
+    output_schema = simplify_schema(
+        CoverageGapManifest.model_json_schema(),
+        remove_keys=_STAGE2_INJECT_KEYS,
     )
 
     options = ClaudeAgentOptions(
@@ -37,7 +38,6 @@ def run_stage2(
         max_turns=40,
         max_budget_usd=config.budgets.stage2_usd,
         cwd=str(cwd or Path.cwd()),
-        betas=["structured-outputs-2025-11-13"],
         output_format={
             "type": "json_schema",
             "schema": output_schema,
