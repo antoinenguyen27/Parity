@@ -194,6 +194,8 @@ jobs:
         with:
           name: parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: .parity/
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 90
 
   parity-write:
