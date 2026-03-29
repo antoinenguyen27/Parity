@@ -73,7 +73,7 @@ The Agent SDK gives Claude Code's full agent loop — codebase traversal, tool e
 
 - **Codebase variance is the hardest problem.** Users store prompts in Python constants, YAML files, markdown, Jinja templates, and environment variables. A custom traversal layer would need to anticipate every pattern. The Agent SDK encounters the actual codebase and reasons about what it finds.
 - **Structured message streaming.** `AssistantMessage`, `ResultMessage`, and `UserMessage` events allow parity to intercept outputs, validate intermediate results, and handle errors without stdout parsing.
-- **Hooks for Stage 4 safety.** Tool call hooks allow parity to gate actual platform writes behind validation of probe structure before execution.
+- **Deterministic write path.** Stage 4 stays outside the Agent SDK entirely, so approved-platform writes remain fast, auditable, and isolated from agent tool access.
 - **Cost control per stage.** `max_budget_usd` prevents runaway costs in CI.
 - **MCP first-class.** Platform integrations via MCP are native to the SDK, not shell-invoked.
 
@@ -153,11 +153,11 @@ Pull Request (GitHub)
 
 | Component | Responsibility |
 |---|---|
-| Claude Agent SDK (Stages 1–3) | Reasoning, codebase traversal, MCP orchestration, probe generation |
+| Claude Agent SDK (Stages 1–3) | Reasoning, codebase traversal, in-process tool orchestration, probe generation |
 | `get_behavior_diff` tool | Orchestrator-invoked (pre-Stage 1): git diff + PR metadata → structured `RawChangeData` JSON. Injected into Stage 1 prompt; not agent-called. |
 | `embed_batch` tool | Deterministic: batch embed eval inputs, cache results |
 | `find_similar` tool | Deterministic: cosine similarity, classify as duplicate/boundary/related/novel |
-| MCP servers (Stage 2) | Read access to eval platforms: LangSmith, Braintrust, Arize Phoenix, Promptfoo |
+| Stage 2 SDK MCP toolbox | Host-owned read/compare tools: `search_eval_targets`, `fetch_eval_cases`, `embed_batch`, `find_similar`, `find_similar_batch` |
 | `write_probes.py` (Stage 4) | Deterministic: approved probes → platform SDK write calls. No agent involved. |
 | Context Pack | Static files: product context, user profiles, interaction patterns, good/bad examples, traces |
 
@@ -355,7 +355,8 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 async for message in query(
     prompt=render_stage1_prompt(raw_change_data, context),
     options=ClaudeAgentOptions(
-        allowed_tools=["Bash", "Read", "Glob"],
+        tools=["Bash", "Read", "Glob"],
+        can_use_tool=read_only_stage1_policy(repo_root),
         mcp_servers=[],          # no MCP in Stage 1
         max_turns=40,
         max_budget_usd=0.50,
@@ -369,8 +370,10 @@ async for message in query(
 
 **`Bash`, `Read`, `Glob`** — the agent's primary discovery tools. Stage 1 uses these to:
 - Fetch file content for changed files not pre-loaded: `git show origin/{base}:{path}`, `git diff ... -- {path}`
-- Understand how a changed artifact is used: which agent class imports it, which API route invokes it
+- Inspect unchanged supporting files across the repo when they are needed to understand a changed artifact
 - Inspect Python files for module-level string constants that act as prompts
+
+`Bash` is restricted to read-only git inspection commands, `Read` and `Glob` are confined to the repository root, and secret-bearing or generated paths are denied.
 
 **Prompt receives:**
 - `all_changed_files` — lightweight list of every file changed in the PR (path + change_kind)
@@ -420,11 +423,14 @@ PROCESS:
      - Read the file:       Read tool on the current path
      - Get before content:  Bash: git show origin/{base_branch}:<path>
      - Get the diff:        Bash: git diff --unified=5 origin/{base_branch}...HEAD -- <path>
-3. Behavioral artifacts include (not limited to): system prompts, tool descriptions,
+3. Inspect unchanged supporting files when needed to understand the behavioral effect
+   of a change. Use Read and Glob to follow imports, referenced templates,
+   validators, schemas, and helper modules across the repo.
+4. Behavioral artifacts include (not limited to): system prompts, tool descriptions,
    LLM judges, output validators, guardrails, retrieval instructions, retry policies,
    fallback prompts — any file whose change alters what the LLM agent does or decides.
-4. For Python files: look for module-level string constants that contain prompt-like content.
-5. Classify each behavioral artifact you discover. For each:
+5. For Python files: look for module-level string constants that contain prompt-like content.
+6. Classify each behavioral artifact you discover. For each:
    a. Infer the intended behavioral change from the diff.
    b. Compare against PR description. Flag contradictions.
    c. Identify unintended risks: what could go wrong that the developer may not have
@@ -517,10 +523,14 @@ Stage 1 completed with `has_changes: true`.
 
 ```python
 async for message in query(
-    prompt=render_stage2_prompt(manifest=stage1_manifest),
+    prompt=render_stage2_prompt(
+        stage1_manifest,
+        mapping_resolutions=resolved_mappings,
+        bootstrap_brief=bootstrap_brief,
+    ),
     options=ClaudeAgentOptions(
-        allowed_tools=[],  # empty = all tools permitted, including MCP servers and Bash
-        mcp_servers=get_configured_mcp_servers(),  # LangSmith, Braintrust, Arize, etc.
+        tools=[],  # no built-in Bash or write tools
+        mcp_servers={"parity_stage2": in_process_sdk_mcp_server()},
         max_turns=40,
         max_budget_usd=0.75,
         cwd=repo_root,
@@ -537,37 +547,24 @@ The `BehaviorChangeManifest` from Stage 1, with raw diffs stripped. Stage 2 rece
 - `false_negative_risks`, `false_positive_risks` (for guardrail artifacts)
 - `affected_components`
 - `overall_risk`, `compound_change_detected`
+- resolved mapping metadata derived from `parity.yaml`
+- a deterministic bootstrap brief derived from Stage 1 risk signals
 
 Raw diffs are not passed to Stage 2. They were needed for Stage 1's reasoning; they are noise for Stage 2.
 
 ### Tools Available
 
-**MCP servers** — Claude Code natively calls configured MCP tools to retrieve eval datasets:
+Stage 2 exposes a host-owned in-process MCP toolbox rather than generic Bash:
 
-| Platform | MCP Endpoint | Read Capability |
-|---|---|---|
-| LangSmith | `langsmith-mcp-server` (stdio) | `fetch_datasets`, `fetch_examples`, `read_example` |
-| Braintrust | `https://api.braintrust.dev/mcp` (HTTP) | `sql_query` (BTQL), `list_recent_objects`, `infer_schema` |
-| Arize Phoenix | `npx @arizeai/phoenix-mcp` (stdio) | `list_datasets`, `get_dataset`, `list_experiments` |
-| Promptfoo | Direct file read via `Bash`/`Read` | Parse `promptfooconfig.yaml` test cases |
+| Tool | Responsibility |
+|---|---|
+| `fetch_eval_cases` | Load eval cases from LangSmith, Braintrust, Arize Phoenix, or repo-local Promptfoo configs |
+| `search_eval_targets` | Limited platform-side discovery when mappings are unresolved or stale |
+| `embed_batch` | Embed eval inputs with host-owned OpenAI credentials and cache control |
+| `find_similar` | Single-candidate similarity classification |
+| `find_similar_batch` | Scoped multi-candidate comparison against one resolved corpus |
 
-The agent uses MCP tools to retrieve eval cases for the datasets mapped to the changed artifacts in `parity.yaml`. If no mapping exists for an artifact, it posts a warning (see Section 15: Missing Mapping Handling). If a mapping exists but the dataset is empty, or no datasets exist at all, Stage 2 records bootstrap coverage instead of failing.
-
-> **Note on `allowed_tools=[]`:** Stage 2's Agent SDK options set `allowed_tools=[]`, which in the Agent SDK means "all tools permitted" (including MCP servers). This is necessary because Stage 2 needs both Bash access (to call `embed_batch` and `find_similar` tools) and MCP access (to query configured eval platforms). An empty list grants the broadest access.
-
-**`embed_batch` (parity tool, called via Bash)**
-Takes a list of normalised input strings, returns embeddings using OpenAI's API (`text-embedding-3-small` or `text-embedding-3-large`, configured in `parity.yaml`). Uses SQLite cache at `.parity/embedding_cache.db`. Returns embeddings; never re-embeds inputs with a cache hit. (Note: Parity currently supports OpenAI embeddings only.)
-
-```bash
-parity embed-batch --inputs inputs.json --output embeddings.json
-```
-
-**`find_similar` (parity tool, called via Bash)**  
-Takes a probe candidate input and the corpus embeddings, returns similarity classification for each corpus item.
-
-```bash
-parity find-similar --candidate candidate.json --corpus embeddings.json --output similarity.json
-```
+The agent uses these tools to retrieve eval cases for the datasets mapped to the changed artifacts in `parity.yaml`. If a mapping is unresolved, missing, stale, or points to an empty dataset, Stage 2 can recover with limited same-platform discovery or fall back to bootstrap coverage instead of failing. Credentials stay in the host process; the agent does not receive raw API keys or a secret-bearing `.claude/mcp_servers.json`.
 
 Similarity thresholds (configurable in `parity.yaml`):
 
@@ -595,9 +592,9 @@ Multi-turn conversation inputs are detected when the input is a list of role/con
 
 For each changed artifact, Stage 2 resolves which eval dataset to query in this order:
 
-1. **Explicit mapping** in `parity.yaml` — used directly
-2. **Convention matching** — dataset name contains the artifact's parent directory name, or dataset tags include the agent name
-3. **Interactive prompt** — if no mapping resolves, Stage 2 records the unmapped artifact in `CoverageGapManifest.unmapped_artifacts`. A warning is posted in the PR comment with instructions to add the mapping.
+1. **Explicit mapping** in `parity.yaml` — preferred starting point
+2. **Limited same-platform recovery** — if the explicit target is missing, inaccessible, empty, or materially unrelated, use `search_eval_targets` on that same platform
+3. **Same-platform discovery for unresolved artifacts** — if no mapping resolves, use `search_eval_targets` conservatively and record the retrieval path in `coverage_summary.retrieval_notes`
 
 ### Stage 2 Prompt Design
 
@@ -608,29 +605,30 @@ retrieve existing eval coverage for a set of changed artifacts and identify wher
 is missing relative to the predicted behavioral impacts.
 
 PROCESS:
-1. For each changed artifact in the manifest, retrieve existing eval cases using the 
-   available MCP tools for the configured eval platform.
-2. For each retrieved case, call embed_batch to compute embeddings (the tool handles 
-   caching automatically).
-3. For each risk flag and predicted impact in the manifest, call find_similar to 
-   determine whether existing coverage addresses it.
-4. If relevant eval cases are found by any retrieval path, remain in coverage-aware mode:
+1. For each explicit mapping, retrieve eval cases with fetch_eval_cases.
+2. If an explicit target is missing, inaccessible, empty, or materially unrelated,
+   call search_eval_targets on that same platform and retry fetch_eval_cases.
+3. For unresolved artifacts, use limited same-platform discovery via search_eval_targets,
+   then fetch_eval_cases for the chosen corpus.
+4. If relevant eval cases are found, call embed_batch and then prefer find_similar_batch
+   for semantically coherent slices that share one artifact context and one resolved corpus.
+5. If relevant eval cases are found by any retrieval path, remain in coverage-aware mode:
    - set `coverage_summary.mode` to `coverage_aware`
    - set `coverage_summary.corpus_status` to `available`
    - if needed, explain non-standard retrieval details in `coverage_summary.retrieval_notes`
    - leave `coverage_summary.bootstrap_reason` empty
-5. Classify each risk flag as: covered | boundary_shift | uncovered
-6. For guardrail artifacts, analyze coverage in both directions:
+6. Classify each risk flag as: covered | boundary_shift | uncovered
+7. For guardrail artifacts, analyze coverage in both directions:
    - Are there existing cases testing things the guardrail should catch?
    - Are there existing cases testing things the guardrail should allow through?
-7. If no relevant eval cases exist, switch to bootstrap mode:
+8. If no relevant eval cases exist, switch to bootstrap mode:
    - mark `coverage_summary.mode` as `bootstrap`
    - mark `coverage_summary.corpus_status` as `empty` or `unavailable`
    - explain the reason in `coverage_summary.bootstrap_reason`
    - use `coverage_summary.retrieval_notes` only for extra context, not as a substitute for `bootstrap_reason`
    - emit baseline gaps with empty `nearest_existing_cases`
-8. Identify the top-priority gaps: uncovered risk flags ranked by severity.
-9. Output the CoverageGapManifest JSON.
+9. Identify the top-priority gaps: uncovered risk flags ranked by severity.
+10. Output the CoverageGapManifest JSON.
 
 IMPORTANT: Do not generate probes in this stage. Identify gaps only.
 ```
@@ -700,7 +698,7 @@ async for message in query(
         context_pack=load_context_pack(),
     ),
     options=ClaudeAgentOptions(
-        allowed_tools=[],         # Stage 3 is pure generation from prompt context
+        tools=[],                 # Stage 3 is pure generation from prompt context
         mcp_servers=[],           # no MCP in Stage 3
         max_turns=25,
         max_budget_usd=1.00,
@@ -1053,7 +1051,7 @@ def write_to_promptfoo(probes, test_file):
 
 ### Write-Outcome Comment
 
-After write completes, Stage 4 posts a comment on the merged PR reporting the outcome:
+After write completes, a follow-up deterministic step posts a comment on the merged PR reporting the outcome:
 
 ```markdown
 ## ✅ Parity: Probes Written
@@ -1134,6 +1132,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -1161,16 +1160,28 @@ jobs:
           path: .parity/
 
       - name: Write probes to platform
+        id: write
+        continue-on-error: true
         run: |
           parity write-probes \
             --proposal .parity/stage3.json \
-            --config parity.yaml
+            --config parity.yaml \
+            --outcome-output .parity/write-outcome.json \
+            --skip-comment
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
+
+      - name: Post writeback result comment
+        if: always() && steps.write.outcome != 'skipped'
+        run: |
+          parity post-write-comment \
+            --outcome .parity/write-outcome.json \
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}
 ```
@@ -1181,17 +1192,17 @@ jobs:
 
 ### Integration Matrix
 
-| Platform | MCP Read | Write Method | Auto-Run | Notes |
+| Platform | Stage 2 Read Path | Write Method | Auto-Run | Notes |
 |---|---|---|---|---|
-| LangSmith | ✅ stdio server | Python SDK direct | v2 (planned) | MCP write is docs-only; SDK required for writes |
-| Braintrust | ✅ HTTP server (`api.braintrust.dev/mcp`) | Python SDK direct | v2 (planned) | MCP supports read/query; write confirmation pending |
-| Arize Phoenix | ✅ npm server (`@arizeai/phoenix-mcp`) | Python SDK direct | v2 (planned) | Both read and write MCP confirmed; SDK used for CI reliability |
-| Promptfoo | ❌ File-based | File append | v2 (planned) | No API; YAML file read/write |
+| LangSmith | Host-owned SDK reader | Python SDK direct | v2 (planned) | Stage 2 wraps LangSmith access behind in-process tools |
+| Braintrust | Host-owned direct reader | Python SDK direct | v2 (planned) | Stage 2 wraps Braintrust access behind in-process tools |
+| Arize Phoenix | Host-owned SDK reader | Python SDK direct | v2 (planned) | Stage 2 wraps Phoenix access behind in-process tools |
+| Promptfoo | Repo-local file reader | File append | v2 (planned) | Read and write stay confined to local YAML files |
 | Humanloop | ❌ Sunsetted Sept 2025 | N/A | N/A | Removed from scope entirely |
 
 ### MCP Configuration Generation
 
-`parity setup-mcp` generates `.claude/mcp_servers.json` from `parity.yaml` + available env vars:
+`parity setup-mcp` generates `.claude/mcp_servers.json` from `parity.yaml` + available env vars for local debugging only. The CI analyzer path does not write this file; Stage 2 uses an in-process SDK MCP toolbox instead.
 
 ```python
 def generate_mcp_config(config: ParityConfig, env: dict) -> dict:
@@ -1294,7 +1305,7 @@ def render_stage2_prompt(stage1_manifest: dict) -> str:
     )
 ```
 
-**Stage 2 receives:** Only the stripped Stage 1 manifest. No context pack. MCP tools provide eval corpus data dynamically. If zero relevant eval cases found, produces `CoverageGapManifest` in bootstrap mode with `coverage_summary.mode = "bootstrap"` and empty `nearest_existing_cases` arrays.
+**Stage 2 receives:** The stripped Stage 1 manifest, resolved mapping metadata, and a deterministic bootstrap brief. No context pack. Host-owned Stage 2 tools provide eval corpus data dynamically. If zero relevant eval cases are found, Stage 2 produces `CoverageGapManifest` in bootstrap mode with `coverage_summary.mode = "bootstrap"` and empty `nearest_existing_cases` arrays.
 
 #### Stage 3 Rendering
 
@@ -1318,9 +1329,9 @@ def render_stage3_prompt(stage1_manifest: dict, stage2_manifest: dict, context: 
 
 **Stage 3 receives:** Full context pack, Stage 1 brief (intent + risk flags only, raw diffs/content stripped), Stage 2 coverage summary and gaps. This is the primary quality driver where the generator sees product context, users, patterns, examples, and real traces.
 
-### Embedding and Similarity Tools: `embed_batch` and `find_similar`
+### Embedding and Similarity Tools: `embed_batch`, `find_similar`, and `find_similar_batch`
 
-Both are Python CLI entry points that Stage 2 invokes to classify probes against existing eval coverage.
+These utilities remain available as Python CLI entry points for debugging and local workflows. In the analyzer pipeline, Stage 2 now calls equivalent host-owned SDK MCP tools rather than shelling out through Bash.
 
 #### `embed_batch` Tool
 
@@ -1438,7 +1449,6 @@ jobs:
             --output .parity/stage1.json
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
       - name: Check gate
@@ -1474,21 +1484,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Post PR comment (no changes)
-        if: steps.gate.outputs.has_changes == 'false'
-        run: parity post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Post PR comment (probes)
-        if: steps.gate.outputs.has_changes == 'true'
-        run: |
-          parity post-comment \
-            --proposal .parity/stage3.json \
-            --pr-number ${{ github.event.pull_request.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -1496,6 +1491,43 @@ jobs:
           name: parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: .parity/
           retention-days: 90
+
+  parity-comment:
+    if: github.event_name == 'pull_request'
+    needs: parity-analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install parity-ai
+
+      - name: Download analysis artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: .parity/
+
+      - name: Post PR comment (no changes)
+        if: needs.parity-analyze.outputs.has_changes == 'false'
+        run: parity post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (probes)
+        if: needs.parity-analyze.outputs.has_changes == 'true'
+        run: |
+          parity post-comment \
+            --proposal .parity/stage3.json \
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ─── STAGE 4: Write + Auto-Run (post-merge, post-approval) ──────────────────
   parity-write:
@@ -1509,6 +1541,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -1536,16 +1569,28 @@ jobs:
           path: .parity/
 
       - name: Write probes to platform
+        id: write
+        continue-on-error: true
         run: |
           parity write-probes \
             --proposal .parity/stage3.json \
-            --config parity.yaml
+            --config parity.yaml \
+            --outcome-output .parity/write-outcome.json \
+            --skip-comment
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
+
+      - name: Post writeback result comment
+        if: always() && steps.write.outcome != 'skipped'
+        run: |
+          parity post-write-comment \
+            --outcome .parity/write-outcome.json \
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}
 ```
@@ -1914,7 +1959,7 @@ parity find-similar \
 
 #### `parity setup-mcp` (optional)
 
-Generate `.claude/mcp_servers.json` from config and environment variables. Used for local debugging (CI generates inline).
+Generate `.claude/mcp_servers.json` from config and environment variables. Used for local debugging only; the CI analyzer path does not generate or consume this file.
 
 ```bash
 parity setup-mcp [--config parity.yaml] [--output .claude/mcp_servers.json]
@@ -2047,8 +2092,8 @@ Parity applies per-stage `max_budget_usd` caps to prevent runaway costs in CI. T
 | Stage | `max_budget_usd` | `max_turns` | Justification |
 |---|---|---|---|
 | Stage 1 | 0.50 | 40 | Agent-driven codebase discovery: reads changed files, analyzes diffs, may fetch additional files via tools. Higher turn count for larger PRs. |
-| Stage 2 | 0.75 | 40 | MCP platform queries (3–5 per platform) + embedding calls + gap analysis. |
-| Stage 3 | 1.00 | 25 | Single-pass probe generation; no iterative traversal needed. |
+| Stage 2 | 0.75 | 40 | Host-owned eval retrieval/discovery calls + embedding/similarity passes + gap analysis. |
+| Stage 3 | 1.00 | 25 | Single-pass probe generation from injected context; no tool traversal needed. |
 
 These are configurable in `parity.yaml` under `budgets:`. Increase if stages time out on large diffs or complex repos.
 
@@ -2148,10 +2193,12 @@ The following are explicitly deferred to future versions:
 | `parity doctor` | Validate setup (config, API keys, patterns, context files) | `--ci` (check GitHub label) |
 | `parity run-stage <1\|2\|3>` | Execute a pipeline stage; output structured JSON | `--pr-number`, `--base-branch`, `--manifest`, `--gaps`, `--output`, `--config` |
 | `parity get-behavior-diff` | Extract and structure PR changes (internal; called by run-stage) | `--base-branch`, `--pr-number`, `--config` |
-| `parity embed-batch` | Batch embed eval inputs; cache results (internal; called by Stage 2) | `--inputs`, `--output`, `--model`, `--cache` |
-| `parity find-similar` | Classify probe candidates against existing eval corpus (internal; Stage 2) | `--candidate`, `--corpus`, `--output`, `--duplicate-threshold`, `--boundary-threshold` |
+| `parity embed-batch` | Batch embed eval inputs; cache results (internal helper; also available for debugging) | `--inputs`, `--output`, `--model`, `--cache` |
+| `parity find-similar` | Classify one candidate against existing eval corpus (internal helper; also available for debugging) | `--candidate`, `--corpus`, `--output`, `--duplicate-threshold`, `--boundary-threshold` |
+| `parity find-similar-batch` | Classify a scoped batch of candidates against one embedded corpus | `--candidates`, `--corpus`, `--output`, `--duplicate-threshold`, `--boundary-threshold` |
 | `parity post-comment` | Post/update PR comment with probe proposal or "no changes" message | `--proposal` or `--no-changes`, `--pr-number`, `--repo`, `--token` |
-| `parity write-probes` | Write approved probes to eval platform (Stage 4) | `--proposal`, `--config` |
+| `parity write-probes` | Write approved probes to eval platform (Stage 4) | `--proposal`, `--config`, `--outcome-output`, `--skip-comment` |
+| `parity post-write-comment` | Post merged-PR writeback results from a saved outcome file | `--outcome`, `--pr-number`, `--repo`, `--token`, `--run-id` |
 | `parity resolve-run-id` | Locate analysis run by head SHA for artifact download (Stage 4 helper) | `--head-sha`, `--repo`, `--workflow-id`, `--branch`, `--status`, `--conclusion` |
 | `parity setup-mcp` | Generate MCP server config from parity.yaml and env vars (optional; for local debugging) | `--config`, `--output` |
 
@@ -2212,7 +2259,7 @@ Increase budget caps in `parity.yaml` if stages consistently exceed costs (espec
 - Stage 1 `get-behavior-diff` returns error → treated as no changes, exit 0
 
 **Warnings (non-blocking):**
-- Stage 2 MCP connection failed → continue without coverage context
+- Stage 2 eval retrieval failed → continue without coverage context
 - Stage 2 dataset mapping missing → continue in starter mode
 - Stage 2 dataset exists but empty → continue in starter mode
 

@@ -39,7 +39,12 @@ def test_write_probes_uses_promptfoo_mapping_and_counts_success(tmp_path: Path) 
         ],
     )
 
-    outcome = write_probes_from_proposal(proposal, config=config, proposal_path=proposal_path)
+    outcome = write_probes_from_proposal(
+        proposal,
+        config=config,
+        proposal_path=proposal_path,
+        repo_root=tmp_path,
+    )
 
     assert outcome.exit_code == 0
     assert outcome.total_written == 2
@@ -51,7 +56,12 @@ def test_write_probes_fails_when_no_mapping_or_fallback_exists(tmp_path: Path) -
     proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
     proposal_path = _write_stage_artifacts(tmp_path)
 
-    outcome = write_probes_from_proposal(proposal, config=ParityConfig(), proposal_path=proposal_path)
+    outcome = write_probes_from_proposal(
+        proposal,
+        config=ParityConfig(),
+        proposal_path=proposal_path,
+        repo_root=tmp_path,
+    )
 
     assert outcome.exit_code == 2
     assert outcome.total_written == 0
@@ -73,11 +83,39 @@ def test_write_probes_falls_back_to_platform_promptfoo_when_no_explicit_mapping(
         mappings=[],  # no artifact-specific mappings
     )
 
-    outcome = write_probes_from_proposal(proposal, config=config, proposal_path=proposal_path)
+    outcome = write_probes_from_proposal(
+        proposal,
+        config=config,
+        proposal_path=proposal_path,
+        repo_root=tmp_path,
+    )
 
     assert outcome.exit_code == 0
     assert outcome.total_written == 2
     assert fallback_config_path.exists()
+
+
+def test_write_probes_rejects_promptfoo_targets_outside_repo_root(tmp_path: Path) -> None:
+    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
+    proposal_path = _write_stage_artifacts(tmp_path)
+    outside_target = tmp_path.parent / "outside-promptfoo.yaml"
+    config = ParityConfig(
+        platforms=PlatformsConfig(promptfoo=PromptfooPlatformConfig(config_path=str(outside_target))),
+        mappings=[],
+    )
+
+    outcome = write_probes_from_proposal(
+        proposal,
+        config=config,
+        proposal_path=proposal_path,
+        repo_root=tmp_path,
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.total_written == 0
+    assert outcome.failures == [
+        f"promptfoo:{outside_target}: Promptfoo write target must stay within the repository root: {outside_target}"
+    ]
 
 
 def test_selected_probes_returns_all_when_none_approved() -> None:

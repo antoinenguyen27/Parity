@@ -267,12 +267,23 @@ jobs:
           path: .parity/
 
       - name: Write probes to LangSmith
+        id: write
+        continue-on-error: true
         run: |
           parity write-probes \
             --proposal .parity/stage3.json \
-            --config parity.yaml
+            --config parity.yaml \
+            --outcome-output .parity/write-outcome.json \
+            --skip-comment
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      - name: Post writeback result comment
+        if: always() && steps.write.outcome != 'skipped'
+        run: |
+          parity post-write-comment \
+            --outcome .parity/write-outcome.json \
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-30
+
+### Changed
+- Stage 1 is now explicitly read-only at the tool-policy layer: wide repo reads remain allowed, but Bash is confined to read-only git inspection and secret-bearing/generated paths are denied.
+- Stage 2 now uses a host-owned in-process SDK MCP toolbox for eval retrieval, discovery, embeddings, and similarity checks. The analyzer no longer relies on generic Bash or writes secret-bearing `.claude/mcp_servers.json` in CI.
+- Stage 3 now runs without built-in tools. Proposal generation remains unchanged, but the agent no longer has an unnecessary tool surface.
+- Workflow generation and the example workflow now split PR commenting into a dedicated `parity-comment` job and split Stage 4 writeback from merged-PR result commenting.
+- Stage 4 `promptfoo` write targets are now confined to the checked-out repository root, and writeback comments are emitted from a separate deterministic command.
+
 ## 2026-03-16
 
 ### Changed

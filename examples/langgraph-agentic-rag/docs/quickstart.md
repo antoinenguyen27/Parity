@@ -23,7 +23,7 @@ The `parity.yaml` file in this demo defines **hint patterns** that guide Parity'
 - **`behavior_artifacts.paths: ["app/**"]`** — tells Parity to pre-load files in the `app/` directory for efficiency
 - **`python_patterns`** — hints that the agent should look for Python module-level constants with these naming patterns
 
-**Important:** These patterns are *discovery hints*, not filters. The Stage 1 agent always sees **all changed files** in the PR and can inspect any of them using the Read and Bash tools. Files matching the configured patterns are pre-loaded with before/after content and diffs to optimize performance. Files that don't match are still visible to the agent — it just needs to fetch them on-demand.
+**Important:** These patterns are *discovery hints*, not filters. The Stage 1 agent always sees **all changed files** in the PR and can inspect any of them using `Read`, `Glob`, and a read-only Bash surface for git inspection. It can also inspect unchanged supporting files elsewhere in the repo when they are needed to understand how a changed artifact is used. Files matching the configured patterns are pre-loaded with before/after content and diffs to optimize performance. Files that don't match are still visible to the agent — it just needs to fetch them on-demand.
 
 In this demo, the changes happen to be in `app/graph.py`, which matches the configured pattern, so they're pre-loaded. But if you modified a file outside `app/` with behavioral significance, Parity's agent would still detect it.
 
@@ -179,10 +179,11 @@ mappings:
     dataset: "lilian-weng-rag-baseline"
 ```
 
-**`.github/workflows/parity.yml`** — the GitHub Actions workflow with two jobs:
+**`.github/workflows/parity.yml`** — the GitHub Actions workflow with three jobs:
 
-- `parity-analyze`: runs on every PR, executes Stages 1–3, posts a comment, uploads artifacts
-- `parity-write`: runs on merge when the `parity:approve` label is present, downloads the Stage 3 artifact and writes probes to LangSmith
+- `parity-analyze`: runs on every PR, executes Stages 1–3, uploads artifacts
+- `parity-comment`: posts the PR comment from the saved Stage 3 artifact
+- `parity-write`: runs on merge when the `parity:approve` label is present, downloads the Stage 3 artifact, writes probes to LangSmith, and posts a merged-PR writeback result comment
 
 ---
 
@@ -247,6 +248,7 @@ The `parity-write` job will:
 2. Download the matching `.parity` artifact from that run
 3. Check out the merged repo so `parity.yaml` is available
 4. Write the approved probes to `lilian-weng-rag-baseline` in LangSmith
+5. Post a merged-PR result comment summarizing the writeback outcome
 
 ---
 

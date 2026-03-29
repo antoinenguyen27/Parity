@@ -13,7 +13,7 @@ from parity.cli.post_comment import post_comment_command
 from parity.cli.resolve_run_id import resolve_run_id_command
 from parity.cli.run_stage import run_stage_command
 from parity.cli.setup_mcp import setup_mcp_command
-from parity.cli.write_probes import write_probes_command
+from parity.cli.write_probes import post_write_comment_command, write_probes_command
 
 
 @click.group()
@@ -33,6 +33,7 @@ cli.add_command(resolve_run_id_command)
 cli.add_command(run_stage_command)
 cli.add_command(setup_mcp_command)
 cli.add_command(write_probes_command)
+cli.add_command(post_write_comment_command)
 
 
 if __name__ == "__main__":

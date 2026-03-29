@@ -342,19 +342,46 @@ jobs:
           path: .parity/
 
       - name: Write evals to platform
+        id: write
+        continue-on-error: true
         run: |
           parity write-probes \\
             --proposal .parity/stage3.json \\
-            --config parity.yaml
+            --config parity.yaml \\
+            --outcome-output .parity/write-outcome.json \\
+            --skip-comment
         env:
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
-          PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
+__WRITE_PLATFORM_SECRET_ENVS__
+      - name: Post writeback result comment
+        if: always() && steps.write.outcome != 'skipped'
+        run: |
+          parity post-write-comment \\
+            --outcome .parity/write-outcome.json \\
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}
 """
+
+
+def _render_write_platform_secret_envs(config: ParityConfig) -> str:
+    lines: list[str] = []
+    if config.platforms.langsmith:
+        lines.append("          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}")
+    if config.platforms.braintrust:
+        lines.append("          BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}")
+    if config.platforms.arize_phoenix:
+        lines.append("          PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}")
+    return "\n".join(lines) if lines else "          # No platform-specific writeback secrets required"
+
+
+def render_workflow_template(config: ParityConfig) -> str:
+    return WORKFLOW_TEMPLATE.replace(
+        "__WRITE_PLATFORM_SECRET_ENVS__\n",
+        _render_write_platform_secret_envs(config) + "\n",
+    )
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -554,7 +581,7 @@ def init_command(context_only: bool, dry_run: bool) -> None:
             (root / "parity.yaml").write_text(config_yaml, encoding="utf-8")
             workflow_path = root / ".github" / "workflows" / "parity.yml"
             workflow_path.parent.mkdir(parents=True, exist_ok=True)
-            workflow_path.write_text(WORKFLOW_TEMPLATE, encoding="utf-8")
+            workflow_path.write_text(render_workflow_template(config), encoding="utf-8")
 
         if create_context:
             _create_context_stubs(root, dry_run=dry_run)
