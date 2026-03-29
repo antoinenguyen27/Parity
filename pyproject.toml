@@ -27,6 +27,7 @@ dependencies = [
     "click==8.3.1",
     "httpx==0.28.1",
     "langsmith==0.7.17",
+    "mcp==1.26.0",
     "numpy==2.4.3",
     "openai==2.28.0",
     "pydantic==2.12.5",

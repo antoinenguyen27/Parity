@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from parity.config import ParityConfig
 from parity.context import count_tokens
 from parity.models import CoverageGapManifest
 from parity.prompts.stage2_template import render_stage2_prompt
+from parity.stages.stage2_mcp import build_stage2_mcp_server
 from parity.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
 
 _STAGE2_INJECT_KEYS = {"run_id", "stage1_run_id", "timestamp", "schema_version"}
@@ -131,7 +133,6 @@ def run_stage2(
     config: ParityConfig,
     *,
     cwd: str | Path | None = None,
-    mcp_servers: str | Path | dict | None = None,
 ) -> StageRunResult:
     run_id = f"stage2-{int(time.time())}"
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -150,13 +151,10 @@ def run_stage2(
     unresolved_mapping_count = sum(
         1 for resolution in mapping_resolutions if resolution.get("mapping_status") == "unresolved"
     )
-    mcp_configured = isinstance(mcp_servers, (str, Path)) or (
-        isinstance(mcp_servers, dict) and bool(mcp_servers)
-    )
     prompt_tokens = count_tokens(prompt)
     print(
         f"[stage-2] changes_from_stage1={change_count} explicit_mappings={explicit_mapping_count} "
-        f"unresolved_mappings={unresolved_mapping_count} mcp_configured={mcp_configured} "
+        f"unresolved_mappings={unresolved_mapping_count} mcp_configured=True "
         f"prompt_tokens={prompt_tokens}",
         file=sys.stderr,
         flush=True,
@@ -167,13 +165,26 @@ def run_stage2(
         remove_keys=_STAGE2_INJECT_KEYS,
     )
 
+    repo_root = Path(cwd or Path.cwd()).resolve()
+    stage2_server = build_stage2_mcp_server(
+        config=config,
+        repo_root=repo_root,
+        env=dict(os.environ),
+    )
     options = ClaudeAgentOptions(
-        allowed_tools=[],  # empty = all tools permitted, including MCP servers and Bash.
-                           # Stage 2 needs both Bash (for embed_batch, find_similar) and MCP (for platform queries).
-        mcp_servers=mcp_servers or {},
+        tools=[],
+        mcp_servers={
+            "parity_stage2": {
+                "type": "sdk",
+                "name": "parity-stage2",
+                # FastMCP wraps a low-level MCP server, and the Claude Agent SDK's
+                # in-process transport expects that low-level server instance.
+                "instance": stage2_server._mcp_server,
+            }
+        },
         max_turns=40,
         max_budget_usd=config.budgets.stage2_usd,
-        cwd=str(cwd or Path.cwd()),
+        cwd=str(repo_root),
         output_format={
             "type": "json_schema",
             "schema": output_schema,

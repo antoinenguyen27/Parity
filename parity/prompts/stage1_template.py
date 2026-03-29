@@ -34,7 +34,9 @@ PROCESS:
      - Read the file:          Read tool on the current path
      - Get before content:     Bash: git show origin/{base_branch}:<path>
      - Get the diff:           Bash: git diff --unified=5 origin/{base_branch}...HEAD -- <path>
-3. Behavioral artifacts include (not limited to):
+3. Inspect unchanged supporting files when needed to understand the behavioral effect of a change.
+   Use Read and Glob to follow imports, referenced templates, validators, schemas, and helper modules across the repo.
+4. Behavioral artifacts include (not limited to):
      - System prompts, instructions, agent personas (any format: .md, .txt, .yaml, .json, .j2, Python constants)
      - Tool descriptions, tool schemas, function calling configs
      - LLM judges, rubrics, graders, evaluators
@@ -42,21 +44,21 @@ PROCESS:
      - Retrieval instructions, reranking configs, router prompts
      - Retry policies, fallback prompts, escalation logic
      - Any file whose change alters what the LLM agent does or decides
-4. For Python files: look for module-level string assignments (constants) that contain prompt-like content.
+5. For Python files: look for module-level string assignments (constants) that contain prompt-like content.
    Hint: {python_patterns_hint}
-5. Classify each behavioral artifact you discover using these artifact_type values:
+6. Classify each behavioral artifact you discover using these artifact_type values:
      system_prompt | tool_description | llm_judge | input_classifier | output_classifier |
      tool_validator | safety_classifier | retrieval_instruction | planner_prompt |
      output_schema | schema_validator | retry_policy | fallback_prompt | unknown
-6. Infer the intended change for each artifact. Compare against PR description. Flag contradictions.
-7. Identify unintended risks, including guardrail false-negative and false-positive shifts.
-8. IF YOU FOUND NO BEHAVIORAL CHANGES (no artifacts in your analysis):
+7. Infer the intended change for each artifact. Compare against PR description. Flag contradictions.
+8. Identify unintended risks, including guardrail false-negative and false-positive shifts.
+9. IF YOU FOUND NO BEHAVIORAL CHANGES (no artifacts in your analysis):
    - Set has_changes to false
    - Set overall_risk to "low"
    - Set changes array to empty []
    - Set compound_change_detected to false
    - This is a valid, complete response. Return it as JSON.
-9. Output BehaviorChangeManifest JSON only. No prose.
+10. Output BehaviorChangeManifest JSON only. No prose.
 """
 
 

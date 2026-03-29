@@ -6,13 +6,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions
-
 from parity.config import ParityConfig
 from parity.context import count_tokens
 from parity.models import CoverageGap, ProbeProposal
 from parity.prompts.stage3_template import render_stage3_prompt
 from parity.stages._common import StageRunResult, build_metadata, run_stage_with_retry, simplify_schema
+from parity.stages.security import build_stage3_options
 from parity.tools.similarity import apply_diversity_limit, rank_probes
 
 _STAGE3_INJECT_KEYS = {
@@ -53,17 +52,11 @@ def run_stage3(
         remove_keys=_STAGE3_INJECT_KEYS,
     )
 
-    options = ClaudeAgentOptions(
-        allowed_tools=[],  # Stage 3 is pure generation from prompt context.
-                           # Ranking and diversity filtering happen post-generation in the orchestrator (similarity.py).
-        mcp_servers={},
+    options = build_stage3_options(
+        cwd=str(cwd or Path.cwd()),
         max_turns=25,
         max_budget_usd=config.budgets.stage3_usd,
-        cwd=str(cwd or Path.cwd()),
-        output_format={
-            "type": "json_schema",
-            "schema": output_schema,
-        },
+        output_schema=output_schema,
     )
     result = asyncio.run(
         run_stage_with_retry(

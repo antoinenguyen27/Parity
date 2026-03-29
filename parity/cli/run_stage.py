@@ -7,9 +7,8 @@ from pathlib import Path
 import click
 
 from parity.cli.get_behavior_diff import build_raw_change_data
-from parity.cli.setup_mcp import generate_mcp_config
 from parity.config import ParityConfig
-from parity.context import count_tokens, load_context_pack
+from parity.context import load_context_pack
 from parity.errors import BudgetExceededError, ConfigError, GitDiffError, SchemaValidationError, StageError
 from parity.export import write_run_artifacts
 from parity.models import BehaviorChangeManifest, CoverageGapManifest
@@ -64,11 +63,6 @@ def run_stage_command(
             )
 
     context = load_context_pack(config, repo_root=Path.cwd())
-    mcp_payload = generate_mcp_config(config, dict(__import__("os").environ))
-    mcp_path = Path(".claude/mcp_servers.json")
-    mcp_path.parent.mkdir(parents=True, exist_ok=True)
-    mcp_path.write_text(json.dumps(mcp_payload, indent=2), encoding="utf-8")
-
     try:
         if stage == 1:
             if pr_number is None or base_branch is None:
@@ -97,7 +91,7 @@ def run_stage_command(
                 f"[parity] Stage 2 starting — {change_count} change(s) from Stage 1",
                 err=True,
             )
-            result = run_stage2(manifest, config, mcp_servers=mcp_path if mcp_payload["mcpServers"] else {})
+            result = run_stage2(manifest, config)
             metadata = build_metadata(2, result)
             cost = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
             click.echo(

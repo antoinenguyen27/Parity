@@ -183,17 +183,22 @@ on:
 permissions:
   actions: read
   contents: read
-  pull-requests: write
 
 jobs:
   parity-analyze:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      has_changes: ${{ steps.gate.outputs.has_changes }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -212,7 +217,6 @@ jobs:
             --output .parity/stage1.json
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
 
       - name: Check gate
@@ -248,21 +252,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Post PR comment (no changes)
-        if: steps.gate.outputs.has_changes == 'false'
-        run: parity post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Post PR comment (evals proposed)
-        if: steps.gate.outputs.has_changes == 'true'
-        run: |
-          parity post-comment \\
-            --proposal .parity/stage3.json \\
-            --pr-number ${{ github.event.pull_request.number }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -273,17 +262,59 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  parity-comment:
+    if: github.event_name == 'pull_request'
+    needs: parity-analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install parity-ai
+
+      - name: Download analysis artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: .parity/
+
+      - name: Post PR comment (no changes)
+        if: needs.parity-analyze.outputs.has_changes == 'false'
+        run: parity post-comment --no-changes --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post PR comment (evals proposed)
+        if: needs.parity-analyze.outputs.has_changes == 'true'
+        run: |
+          parity post-comment \\
+            --proposal .parity/stage3.json \\
+            --pr-number ${{ github.event.pull_request.number }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   parity-write:
     if: |
       github.event_name == 'pull_request_target' &&
       github.event.pull_request.merged == true &&
       contains(github.event.pull_request.labels.*.name, 'parity:approve')
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:

@@ -26,15 +26,16 @@ OPERATING CONSTRAINTS:
 - Use the bootstrap brief when no relevant eval cases exist; do not search the repository for additional product context in this stage.
 
 PROCESS:
-1. For each artifact with `mapping_status` `explicit`, retrieve eval cases from the specified platform/target using MCP tools or file-based fallbacks.
+1. For each artifact with `mapping_status` `explicit`, retrieve eval cases from the specified platform/target using `fetch_eval_cases`.
 2. If an explicit target fails validation because it is missing, inaccessible, empty, or materially unrelated, you may
-   perform limited convention-based retrieval on the eval platform to find a better match. Record that recovery in
-   `coverage_summary.retrieval_notes`.
-3. For each artifact with `mapping_status` `unresolved`, you may attempt convention-based retrieval using MCP tools or file-based fallbacks.
-4. If you retrieve one or more existing eval cases, call `parity embed-batch` to embed them.
+   call `search_eval_targets` on that same platform to find a better match. Record that recovery in
+   `coverage_summary.retrieval_notes`, then re-run `fetch_eval_cases` with the recovered target.
+3. For each artifact with `mapping_status` `unresolved`, you may use `search_eval_targets` for limited same-platform discovery
+   and then `fetch_eval_cases` to load the chosen corpus.
+4. If you retrieve one or more existing eval cases, call `embed_batch` to embed them.
 5. When comparing multiple risk flags or predicted impacts against the same resolved corpus, prefer
-   `parity find-similar-batch` so you can evaluate that scoped slice in one pass while preserving
-   per-candidate results. Use `parity find-similar` only when you truly have a single candidate.
+   `find_similar_batch` so you can evaluate that scoped slice in one pass while preserving
+   per-candidate results. Use `find_similar` only when you truly have a single candidate.
 6. If you have embedded cases, compare each semantically coherent slice separately:
    - keep one artifact or tightly related artifact slice per comparison batch
    - keep one resolved corpus per comparison batch

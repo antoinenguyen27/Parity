@@ -6,13 +6,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions
-
 from parity.config import ParityConfig
 from parity.context import count_tokens
 from parity.models import BehaviorChangeManifest
 from parity.prompts.stage1_template import render_stage1_prompt
 from parity.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
+from parity.stages.security import build_stage1_options
 
 _STAGE1_INJECT_KEYS = {"run_id", "pr_number", "commit_sha", "timestamp", "schema_version"}
 
@@ -41,16 +40,11 @@ def run_stage1(
         remove_keys=_STAGE1_INJECT_KEYS,
     )
 
-    options = ClaudeAgentOptions(
-        allowed_tools=["Bash", "Read", "Glob"],  # Bash needed: agent uses git show/diff for non-pre-loaded files
-        mcp_servers={},
+    options = build_stage1_options(
+        cwd=str(cwd or Path.cwd()),
         max_turns=40,
         max_budget_usd=config.budgets.stage1_usd,
-        cwd=str(cwd or Path.cwd()),
-        output_format={
-            "type": "json_schema",
-            "schema": output_schema,
-        },
+        output_schema=output_schema,
     )
     result = asyncio.run(
         run_stage_with_retry(
