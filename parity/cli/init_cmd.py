@@ -327,7 +327,8 @@ jobs:
           run_id=$(parity resolve-run-id \\
             --repo ${{ github.repository }} \\
             --workflow-id parity.yml \\
-            --head-sha ${{ github.event.pull_request.head.sha }})
+            --head-sha ${{ github.event.pull_request.head.sha }} \\
+            --artifact-name parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }})
           echo "run_id=$run_id" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

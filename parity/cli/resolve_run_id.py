@@ -16,6 +16,7 @@ from parity.github import find_latest_workflow_run_id
 @click.option("--event", default="pull_request", show_default=True)
 @click.option("--status", default="completed", show_default=True)
 @click.option("--conclusion", default="success", show_default=True)
+@click.option("--artifact-name")
 @click.option("--token-env", default="GITHUB_TOKEN", show_default=True)
 def resolve_run_id_command(
     repo: str,
@@ -25,6 +26,7 @@ def resolve_run_id_command(
     event: str,
     status: str,
     conclusion: str,
+    artifact_name: str | None,
     token_env: str,
 ) -> None:
     token = os.environ.get(token_env, "")
@@ -45,7 +47,20 @@ def resolve_run_id_command(
             head_sha=head_sha,
             branch=branch,
             conclusion=conclusion,
+            artifact_name=artifact_name,
         )
+        if run_id is None and artifact_name and conclusion:
+            run_id = find_latest_workflow_run_id(
+                repo,
+                workflow_id,
+                token,
+                event=event,
+                status=status,
+                head_sha=head_sha,
+                branch=branch,
+                conclusion=None,
+                artifact_name=artifact_name,
+            )
     except GithubApiError as exc:
         click.echo(str(exc), err=True)
         raise SystemExit(1) from exc

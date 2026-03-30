@@ -35,6 +35,8 @@ _ALLOWED_STAGE1_BASH_PATTERNS = (
     re.compile(r"^git diff --unified=\d+ origin/[^\s]+\.{3}HEAD -- [^\n\r]+$"),
     re.compile(r"^git ls-files(?: [^\n\r]+)?$"),
 )
+_STAGE2_MCP_TOOL_PREFIXES = ("mcp__parity_stage2__",)
+_STAGE3_MCP_TOOL_PREFIXES = ("mcp__parity_stage3__",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,22 +87,27 @@ def build_stage1_pre_tool_use_hook(repo_root: Path):
             tool_input=tool_input,
             repo_root=repo_root,
         )
-        hook_specific_output: dict[str, Any] = {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision.behavior,
-        }
-        if decision.message:
-            hook_specific_output["permissionDecisionReason"] = decision.message
-
-        response: SyncHookJSONOutput = {
-            "continue_": True,
-            "hookSpecificOutput": hook_specific_output,
-        }
-        if decision.message:
-            response["reason"] = decision.message
-        return response
+        return _pre_tool_use_response(decision)
 
     return pre_tool_use
+
+
+def build_stage2_options(
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    max_budget_usd: float,
+    output_schema: dict[str, Any],
+    mcp_servers: dict[str, Any] | None = None,
+) -> ClaudeAgentOptions:
+    return _build_mcp_stage_options(
+        cwd=cwd,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        output_schema=output_schema,
+        mcp_servers=mcp_servers,
+        allowed_prefixes=_STAGE2_MCP_TOOL_PREFIXES,
+    )
 
 
 def build_stage3_options(
@@ -111,8 +118,46 @@ def build_stage3_options(
     output_schema: dict[str, Any],
     mcp_servers: dict[str, Any] | None = None,
 ) -> ClaudeAgentOptions:
+    return _build_mcp_stage_options(
+        cwd=cwd,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        output_schema=output_schema,
+        mcp_servers=mcp_servers,
+        allowed_prefixes=_STAGE3_MCP_TOOL_PREFIXES,
+    )
+
+
+def build_mcp_pre_tool_use_hook(*, allowed_prefixes: tuple[str, ...]):
+    async def pre_tool_use(
+        input_data: PreToolUseHookInput,
+        _tool_use_id: str | None,
+        _context: HookContext,
+    ) -> SyncHookJSONOutput:
+        tool_name = input_data.get("tool_name", "")
+        decision = evaluate_mcp_tool_request(
+            tool_name=tool_name,
+            allowed_prefixes=allowed_prefixes,
+        )
+        return _pre_tool_use_response(decision)
+
+    return pre_tool_use
+
+
+def _build_mcp_stage_options(
+    *,
+    cwd: str | Path,
+    max_turns: int,
+    max_budget_usd: float,
+    output_schema: dict[str, Any],
+    mcp_servers: dict[str, Any] | None,
+    allowed_prefixes: tuple[str, ...],
+) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         tools=[],
+        hooks={
+            "PreToolUse": [HookMatcher(matcher=None, hooks=[build_mcp_pre_tool_use_hook(allowed_prefixes=allowed_prefixes)])]
+        },
         mcp_servers=mcp_servers or {},
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
@@ -183,6 +228,42 @@ def evaluate_stage1_tool_request(
         return Stage1ToolDecision("allow")
 
     return Stage1ToolDecision("deny", f"Stage 1 tool `{tool_name}` is not permitted.")
+
+
+def evaluate_mcp_tool_request(
+    *,
+    tool_name: str,
+    allowed_prefixes: tuple[str, ...],
+) -> Stage1ToolDecision:
+    normalized_tool_name = tool_name.strip()
+    if any(normalized_tool_name.startswith(prefix) for prefix in allowed_prefixes):
+        return Stage1ToolDecision("allow")
+
+    if normalized_tool_name.startswith("mcp__"):
+        allowed = ", ".join(f"`{prefix}*`" for prefix in allowed_prefixes)
+        return Stage1ToolDecision(
+            "deny",
+            f"This stage only permits host-owned MCP tools matching {allowed}.",
+        )
+
+    return Stage1ToolDecision("deny", "This stage only permits host-owned MCP tools.")
+
+
+def _pre_tool_use_response(decision: Stage1ToolDecision) -> SyncHookJSONOutput:
+    hook_specific_output: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision.behavior,
+    }
+    if decision.message:
+        hook_specific_output["permissionDecisionReason"] = decision.message
+
+    response: SyncHookJSONOutput = {
+        "continue_": True,
+        "hookSpecificOutput": hook_specific_output,
+    }
+    if decision.message:
+        response["reason"] = decision.message
+    return response
 
 
 def _extract_command(tool_input: dict[str, Any]) -> str:

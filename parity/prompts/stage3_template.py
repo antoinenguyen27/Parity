@@ -125,6 +125,8 @@ def render_stage3_prompt(
     trace_samples = "\n\n---\n\n".join(trimmed_traces)
     context_pack_limit_tokens = compute_stage3_input_context_limit_tokens(candidate_intent_pool_limit)
     analysis_summary = {
+        "analysis_status": stage2_manifest.get("analysis_status", "complete"),
+        "degradation_reason": stage2_manifest.get("degradation_reason"),
         "resolved_targets": [
             {
                 "target_id": target.get("profile", {}).get("target_id"),

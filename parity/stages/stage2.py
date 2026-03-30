@@ -8,8 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions
-
 from parity.config import ParityConfig
 from parity.context import count_tokens
 from parity.errors import BudgetExceededError
@@ -23,6 +21,7 @@ from parity.models import (
 )
 from parity.prompts.stage2_template import render_stage2_prompt
 from parity.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
+from parity.stages.security import build_stage2_options
 from parity.stages.stage2_mcp import build_stage2_mcp_server
 
 _STAGE2_INJECT_KEYS = {"run_id", "stage1_run_id", "timestamp", "schema_version", "runtime_metadata"}
@@ -332,6 +331,7 @@ def _coerce_partial_stage2_manifest(
     stage1_manifest: dict,
     timestamp: str,
     runtime_metadata: dict[str, Any],
+    degraded_reason: str | None = None,
 ) -> EvalAnalysisManifest | None:
     if not isinstance(partial_payload, dict):
         return None
@@ -340,18 +340,40 @@ def _coerce_partial_stage2_manifest(
     candidate["stage1_run_id"] = stage1_manifest.get("run_id", "")
     candidate["timestamp"] = timestamp
     candidate["runtime_metadata"] = runtime_metadata
+    if degraded_reason is not None:
+        candidate["analysis_status"] = "degraded"
+        candidate["degradation_reason"] = degraded_reason
     candidate.setdefault(
         "unresolved_artifacts",
-        [
-            change.get("artifact_path")
-            for change in stage1_manifest.get("changes", [])
-            if isinstance(change.get("artifact_path"), str)
-        ],
+        _derive_unresolved_artifacts(
+            stage1_manifest=stage1_manifest,
+            resolved_targets=_coerce_partial_stage2_targets(partial_payload),
+        ),
     )
     try:
         return EvalAnalysisManifest.model_validate(candidate)
     except Exception:
         return None
+
+
+def _derive_unresolved_artifacts(
+    *,
+    stage1_manifest: dict,
+    resolved_targets: list[ResolvedEvalTarget],
+) -> list[str]:
+    changed_artifacts = [
+        change.get("artifact_path")
+        for change in stage1_manifest.get("changes", [])
+        if isinstance(change.get("artifact_path"), str)
+    ]
+    resolved_artifacts: set[str] = set()
+    for target in resolved_targets:
+        if target.profile.platform == "bootstrap":
+            continue
+        for artifact_path in target.profile.artifact_paths:
+            if isinstance(artifact_path, str) and artifact_path:
+                resolved_artifacts.add(artifact_path)
+    return [artifact for artifact in changed_artifacts if artifact not in resolved_artifacts]
 
 
 def _build_stage2_budget_fallback(
@@ -369,6 +391,7 @@ def _build_stage2_budget_fallback(
         stage1_manifest=stage1_manifest,
         timestamp=timestamp,
         runtime_metadata=runtime_metadata,
+        degraded_reason=reason,
     )
     if partial_manifest is not None:
         return partial_manifest
@@ -385,16 +408,17 @@ def _build_stage2_budget_fallback(
         resolved_targets,
         reason,
     )
-    unresolved_artifacts = [
-        change.get("artifact_path")
-        for change in stage1_manifest.get("changes", [])
-        if isinstance(change.get("artifact_path"), str)
-    ]
+    unresolved_artifacts = _derive_unresolved_artifacts(
+        stage1_manifest=stage1_manifest,
+        resolved_targets=resolved_targets,
+    )
     return EvalAnalysisManifest.model_validate(
         {
             "run_id": run_id,
             "stage1_run_id": stage1_manifest.get("run_id", ""),
             "timestamp": timestamp,
+            "analysis_status": "degraded",
+            "degradation_reason": reason,
             "unresolved_artifacts": unresolved_artifacts,
             "resolved_targets": [target.model_dump(mode="json") for target in resolved_targets],
             "coverage_by_target": [summary.model_dump(mode="json") for summary in coverage_by_target],
@@ -444,8 +468,11 @@ def run_stage2(
         env=dict(os.environ),
         embedding_spend_cap_usd=resolved_spend.stage2_embedding_cap_usd,
     )
-    options = ClaudeAgentOptions(
-        tools=[],
+    options = build_stage2_options(
+        cwd=str(repo_root),
+        max_turns=40,
+        max_budget_usd=resolved_spend.stage2_agent_cap_usd,
+        output_schema=output_schema,
         mcp_servers={
             "parity_stage2": {
                 "type": "sdk",
@@ -453,10 +480,6 @@ def run_stage2(
                 "instance": stage2_runtime.server._mcp_server,
             }
         },
-        max_turns=40,
-        max_budget_usd=resolved_spend.stage2_agent_cap_usd,
-        cwd=str(repo_root),
-        output_format={"type": "json_schema", "schema": output_schema},
     )
 
     degraded_reason: str | None = None
@@ -533,4 +556,3 @@ def run_stage2(
         **runtime_metadata,
     }
     return result
-

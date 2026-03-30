@@ -198,6 +198,7 @@ def find_latest_workflow_run_id(
     head_sha: str | None = None,
     branch: str | None = None,
     conclusion: str | None = "success",
+    artifact_name: str | None = None,
     client: httpx.Client | None = None,
 ) -> int | None:
     http_client = client or httpx.Client(timeout=30.0)
@@ -228,12 +229,54 @@ def find_latest_workflow_run_id(
                     continue
                 run_id = run.get("id")
                 if run_id is not None:
+                    if artifact_name and not _workflow_run_has_artifact(
+                        repo,
+                        int(run_id),
+                        artifact_name,
+                        token,
+                        client=http_client,
+                    ):
+                        continue
                     return int(run_id)
             if len(runs) < 100:
                 return None
             page += 1
     except httpx.HTTPError as exc:
         raise GithubApiError(f"GitHub workflow run lookup failed: {exc}") from exc
+    finally:
+        if should_close:
+            http_client.close()
+
+
+def _workflow_run_has_artifact(
+    repo: str,
+    run_id: int,
+    artifact_name: str,
+    token: str,
+    *,
+    client: httpx.Client | None = None,
+) -> bool:
+    http_client = client or httpx.Client(timeout=30.0)
+    should_close = client is None
+    page = 1
+    try:
+        while True:
+            response = http_client.get(
+                f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts",
+                headers=github_headers(token),
+                params={"per_page": 100, "page": page},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            artifacts = payload.get("artifacts", [])
+            for artifact in artifacts:
+                if artifact.get("name") == artifact_name:
+                    return True
+            if len(artifacts) < 100:
+                return False
+            page += 1
+    except httpx.HTTPError as exc:
+        raise GithubApiError(f"GitHub artifact lookup failed: {exc}") from exc
     finally:
         if should_close:
             http_client.close()
@@ -266,13 +309,40 @@ def render_pr_comment(
         )
 
     if stage2_manifest is not None and stage2_manifest.unresolved_artifacts:
+        if stage2_manifest.analysis_status == "degraded":
+            lines.extend(
+                [
+                    "### Warnings",
+                    (
+                        f"> ⚠️ Stage 2 analysis degraded before full native target resolution completed. "
+                        f"{stage2_manifest.degradation_reason}"
+                    ),
+                    *[
+                        f"> ⚠️ `{artifact}` remained unresolved when analysis degraded. Any bootstrap proposals for this artifact are provisional."
+                        for artifact in stage2_manifest.unresolved_artifacts
+                    ],
+                    "",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "### Warnings",
+                    *[
+                        f"> ⚠️ No usable native eval target was discovered for `{artifact}`. Those items are proposal-only bootstrap candidates."
+                        for artifact in stage2_manifest.unresolved_artifacts
+                    ],
+                    "",
+                ]
+            )
+    elif stage2_manifest is not None and stage2_manifest.analysis_status == "degraded":
         lines.extend(
             [
                 "### Warnings",
-                *[
-                    f"> ⚠️ No usable native eval target was discovered for `{artifact}`. Those items are proposal-only bootstrap candidates."
-                    for artifact in stage2_manifest.unresolved_artifacts
-                ],
+                (
+                    f"> ⚠️ Stage 2 analysis degraded before full native target resolution completed. "
+                    f"{stage2_manifest.degradation_reason}"
+                ),
                 "",
             ]
         )

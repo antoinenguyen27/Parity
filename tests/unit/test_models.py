@@ -163,6 +163,21 @@ def test_coverage_target_summary_requires_reason_in_bootstrap_mode() -> None:
         )
 
 
+def test_eval_analysis_manifest_requires_degradation_reason_when_degraded() -> None:
+    with pytest.raises(ValidationError):
+        EvalAnalysisManifest.model_validate(
+            {
+                "run_id": "run",
+                "stage1_run_id": "stage1",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "analysis_status": "degraded",
+                "resolved_targets": [],
+                "coverage_by_target": [],
+                "gaps": [],
+            }
+        )
+
+
 def test_eval_analysis_manifest_rejects_duplicate_target_ids() -> None:
     with pytest.raises(ValidationError):
         EvalAnalysisManifest.model_validate(

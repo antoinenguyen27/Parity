@@ -19,3 +19,4 @@ def test_example_workflow_uses_current_stage3_contract() -> None:
     assert "probe_count" not in workflow
     assert "parity write-evals" in workflow
     assert "parity write-probes" not in workflow
+    assert "--artifact-name parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}" in workflow

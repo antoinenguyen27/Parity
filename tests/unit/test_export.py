@@ -57,6 +57,34 @@ def test_render_pr_comment_includes_marker_and_write_status_table() -> None:
     assert "<details>" in comment
 
 
+def test_render_pr_comment_distinguishes_degraded_analysis_from_confirmed_no_target() -> None:
+    manifest = BehaviorChangeManifest.model_validate(_load_fixture("sample_manifest.json"))
+    analysis = EvalAnalysisManifest.model_validate(
+        {
+            "run_id": "stage2",
+            "stage1_run_id": "stage1",
+            "timestamp": "2026-03-31T00:00:00Z",
+            "analysis_status": "degraded",
+            "degradation_reason": "Permission-denied MCP calls exhausted the Stage 2 budget.",
+            "unresolved_artifacts": ["app/graph.py"],
+            "resolved_targets": [],
+            "coverage_by_target": [],
+            "gaps": [],
+        }
+    )
+    proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
+
+    comment = render_pr_comment(
+        proposal,
+        stage1_manifest=manifest,
+        stage2_manifest=analysis,
+    )
+
+    assert "Stage 2 analysis degraded before full native target resolution completed." in comment
+    assert "remained unresolved when analysis degraded" in comment
+    assert "No usable native eval target was discovered for `app/graph.py`" not in comment
+
+
 def test_render_summary_markdown_lists_intents() -> None:
     proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
     summary = render_summary_markdown(proposal)

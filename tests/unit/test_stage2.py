@@ -155,4 +155,7 @@ def test_stage2_budget_fallback_bootstraps_targets_from_partial_state() -> None:
 
     assert manifest.resolved_targets[0].profile.platform == "bootstrap"
     assert manifest.resolved_targets[0].method_profile.renderability_status == "review_only"
+    assert manifest.analysis_status == "degraded"
+    assert manifest.degradation_reason == "Agent spend cap was exhausted."
+    assert manifest.unresolved_artifacts == ["prompts/answer.md"]
     assert manifest.runtime_metadata["retrieval"]["fetch_request_count"] == 0

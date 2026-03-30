@@ -16,6 +16,7 @@ GuardrailDirection = Literal["should_catch", "should_pass"]
 CoverageMode = Literal["coverage_aware", "bootstrap"]
 CorpusStatus = Literal["available", "empty", "unavailable"]
 ProfileStatus = Literal["confirmed", "uncertain", "bootstrap"]
+AnalysisStatus = Literal["complete", "degraded"]
 
 
 class CoverageTargetSummary(ParityModel):
@@ -108,6 +109,8 @@ class EvalAnalysisManifest(ParityModel):
     run_id: str
     stage1_run_id: str
     timestamp: datetime
+    analysis_status: AnalysisStatus = "complete"
+    degradation_reason: str | None = None
     unresolved_artifacts: list[str] = Field(default_factory=list)
     resolved_targets: list[ResolvedEvalTarget] = Field(default_factory=list)
     coverage_by_target: list[CoverageTargetSummary] = Field(default_factory=list)
@@ -116,6 +119,10 @@ class EvalAnalysisManifest(ParityModel):
 
     @model_validator(mode="after")
     def ensure_unique_target_ids(self) -> "EvalAnalysisManifest":
+        if self.analysis_status == "degraded" and not self.degradation_reason:
+            raise ValueError("degradation_reason is required when analysis_status is degraded")
+        if self.analysis_status == "complete" and self.degradation_reason:
+            raise ValueError("degradation_reason must be empty when analysis_status is complete")
         seen: set[str] = set()
         dossier_lookup: dict[str, set[str]] = {}
         for target in self.resolved_targets:

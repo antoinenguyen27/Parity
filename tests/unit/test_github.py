@@ -107,3 +107,37 @@ def test_find_latest_workflow_run_id_returns_none_when_no_match() -> None:
     )
 
     assert run_id is None
+
+
+@respx.mock
+def test_find_latest_workflow_run_id_filters_by_artifact_name() -> None:
+    runs_route = respx.get("https://api.github.com/repos/org/repo/actions/workflows/parity.yml/runs").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "workflow_runs": [
+                    {"id": 41, "conclusion": "success"},
+                    {"id": 42, "conclusion": "success"},
+                ]
+            },
+        )
+    )
+    respx.get("https://api.github.com/repos/org/repo/actions/runs/41/artifacts").mock(
+        return_value=httpx.Response(200, json={"artifacts": [{"name": "other-artifact"}]})
+    )
+    respx.get("https://api.github.com/repos/org/repo/actions/runs/42/artifacts").mock(
+        return_value=httpx.Response(200, json={"artifacts": [{"name": "parity-1-abc123"}]})
+    )
+
+    run_id = find_latest_workflow_run_id(
+        "org/repo",
+        "parity.yml",
+        "token",
+        event="pull_request",
+        status="completed",
+        head_sha="abc123",
+        artifact_name="parity-1-abc123",
+    )
+
+    assert runs_route.called
+    assert run_id == 42

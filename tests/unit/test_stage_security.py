@@ -7,7 +7,13 @@ from pathlib import Path
 from claude_agent_sdk import Transport, query
 from claude_agent_sdk.types import ResultMessage
 
-from parity.stages.security import build_stage1_options, build_stage3_options, evaluate_stage1_tool_request
+from parity.stages.security import (
+    build_stage1_options,
+    build_stage2_options,
+    build_stage3_options,
+    evaluate_mcp_tool_request,
+    evaluate_stage1_tool_request,
+)
 
 
 class FakeTransport(Transport):
@@ -199,6 +205,39 @@ def test_stage1_options_support_string_prompt_queries(tmp_path: Path) -> None:
     assert len(results) == 1
 
 
+def test_stage_mcp_policy_allows_expected_stage2_prefix() -> None:
+    result = evaluate_mcp_tool_request(
+        tool_name="mcp__parity_stage2__fetch_eval_target_snapshot",
+        allowed_prefixes=("mcp__parity_stage2__",),
+    )
+
+    assert result.behavior == "allow"
+
+
+def test_stage_mcp_policy_denies_other_mcp_prefixes() -> None:
+    result = evaluate_mcp_tool_request(
+        tool_name="mcp__parity_stage3__read_target_profile",
+        allowed_prefixes=("mcp__parity_stage2__",),
+    )
+
+    assert result.behavior == "deny"
+
+
+def test_stage2_options_allow_only_host_owned_mcp_tools(tmp_path: Path) -> None:
+    options = build_stage2_options(
+        cwd=tmp_path,
+        max_turns=10,
+        max_budget_usd=0.25,
+        output_schema={"type": "object", "properties": {}},
+        mcp_servers={"parity_stage2": {"type": "sdk", "name": "parity-stage2", "instance": object()}},
+    )
+
+    assert options.tools == []
+    assert options.hooks is not None
+    assert "PreToolUse" in options.hooks
+    assert "parity_stage2" in options.mcp_servers
+
+
 def test_stage3_options_disable_builtin_tools(tmp_path: Path) -> None:
     options = build_stage3_options(
         cwd=tmp_path,
@@ -209,3 +248,5 @@ def test_stage3_options_disable_builtin_tools(tmp_path: Path) -> None:
 
     assert options.tools == []
     assert options.mcp_servers == {}
+    assert options.hooks is not None
+    assert "PreToolUse" in options.hooks
