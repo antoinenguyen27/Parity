@@ -4,64 +4,72 @@ import json
 from copy import deepcopy
 from typing import Any
 
-STAGE2_SYSTEM_TEMPLATE = """You are a coverage gap analyst for LLM-based agent evaluation suites.
+STAGE2_SYSTEM_TEMPLATE = """You are an eval analysis specialist for LLM-based agent evaluation suites.
 
 MANIFEST:
 {manifest_json}
 
-RESOLVED DATASET MAPPINGS:
-{mapping_resolutions_json}
+EVAL RULE RESOLUTIONS:
+{rule_resolutions_json}
 
 BOOTSTRAP BRIEF:
 {bootstrap_brief_json}
 
+GOAL:
+Discover the existing eval targets that best match the changed behavior, inspect how those evals actually work, and determine which gaps are real. Eval method is primary; platform is secondary.
+
+HOST-OWNED TOOLS:
+- `discover_eval_targets`
+- `fetch_eval_target_snapshot`
+- `discover_target_evaluators`
+- `read_evaluator_binding`
+- `verify_evaluator_binding`
+- `discover_repo_eval_assets`
+- `read_repo_eval_asset`
+- `list_platform_evaluator_capabilities`
+- `embed_batch`
+- `find_similar`
+- `find_similar_batch`
+
 OPERATING CONSTRAINTS:
-- Treat resolved dataset mappings as the preferred starting point, not as infallible ground truth.
-- Do not inspect `parity.yaml` or search the repository to rediscover mappings.
-- When `mapping_status` is `explicit`, query the specified `platform` and `target` first.
-- If an explicit target is missing, inaccessible, empty, or appears materially unrelated to the changed behavior,
-  you may perform limited platform-side discovery to find a better match.
-- Prefer discovery within the same platform before considering any other configured platform.
-- Only attempt convention-based dataset discovery immediately for artifacts whose `mapping_status` is `unresolved`.
-- Use the bootstrap brief when no relevant eval cases exist; do not search the repository for additional product context in this stage.
+- Treat explicit rule preferences as strong hints, not infallible truth.
+- Prefer the configured preferred target first when one exists.
+- If a preferred target is stale, missing, empty, or materially unrelated, recover within the same platform before broadening discovery.
+- Use repo-asset discovery when file-based eval harnesses may be the right fit.
+- Preserve the native case shape you discover. Do not collapse samples into generic rows.
+- Discover evaluator regime as well as row shape: whether assertions are row-local, dataset-bound, experiment-bound, or repo-code mediated, and which existing evaluator/scorer bindings appear reusable on the resolved target.
+- Prefer formal evaluator discovery whenever the platform or repo harness exposes it. Use inference from rows or metadata only when formal recovery is unavailable or incomplete.
+- Output one combined Stage 2 analysis artifact that includes:
+  - `profile`
+  - `method_profile`
+  - `samples`
+  - `evaluator_dossiers`
+  - `raw_field_patterns`
+  - `aggregate_method_hints`
+  - `resolution_notes`
+- Keep `profile.target_id` stable and unique.
+- Record `coverage_by_target` and `gaps` in the same manifest.
+- Each gap must reference a concrete `target_id`, including bootstrap targets when no usable native target exists.
+- Each gap should explain why the existing evals are insufficient and what native shape or conventions synthesis should respect.
+- Populate `method_profile.binding_candidates`, `evaluator_scope`, `execution_surface`, and reuse-oriented evaluator evidence when the data supports them.
+- Populate `method_profile.formal_discovery_status` and `formal_binding_count`, and preserve whether each evaluator dossier is `formal`, `repo_formal`, `inferred`, or `heuristic`.
+- When a gap clearly maps to one or more evaluator dossiers on the resolved target, include those dossier ids in `evaluator_dossier_ids`.
+- Include `native_shape_hints`, `recommended_eval_area`, and any relevant `repo_asset_refs` on gaps when useful.
 
 PROCESS:
-1. For each artifact with `mapping_status` `explicit`, retrieve eval cases from the specified platform/target using `fetch_eval_cases`.
-2. If an explicit target fails validation because it is missing, inaccessible, empty, or materially unrelated, you may
-   call `search_eval_targets` on that same platform to find a better match. Record that recovery in
-   `coverage_summary.retrieval_notes`, then re-run `fetch_eval_cases` with the recovered target.
-3. For each artifact with `mapping_status` `unresolved`, you may use `search_eval_targets` for limited same-platform discovery
-   and then `fetch_eval_cases` to load the chosen corpus.
-4. If you retrieve one or more existing eval cases, call `embed_batch` to embed them.
-   - `embed_batch` may return `budget_exceeded: true`
-   - when that happens, stop requesting more embeddings
-   - you may still use any returned cached embeddings, but treat `missing_ids` as not embedded
-   - continue with a degraded partial/bootstrap analysis instead of failing the stage
-5. When comparing multiple risk flags or predicted impacts against the same resolved corpus, prefer
-   `find_similar_batch` so you can evaluate that scoped slice in one pass while preserving
-   per-candidate results. Use `find_similar` only when you truly have a single candidate.
-6. If you have embedded cases, compare each semantically coherent slice separately:
-   - keep one artifact or tightly related artifact slice per comparison batch
-   - keep one resolved corpus per comparison batch
-   - do not flatten unrelated artifacts or unrelated datasets into one batch
-7. If you retrieve real eval cases by any method, remain in coverage-aware mode:
-   - set `coverage_summary.mode` to `coverage_aware`
-   - set `coverage_summary.corpus_status` to `available`
-   - if the retrieval path matters (for example, file-based fallback rather than MCP), explain it in
-     `coverage_summary.retrieval_notes`
-   - omit `coverage_summary.bootstrap_reason`
-8. If no relevant eval cases exist at all, switch to bootstrap mode:
-   - set `coverage_summary.mode` to `bootstrap`
-   - set `coverage_summary.corpus_status` to `empty` or `unavailable`
-   - explain why in `coverage_summary.bootstrap_reason`
-   - omit `coverage_summary.retrieval_notes` unless it adds material context
-   - classify the predicted risks as uncovered baseline gaps seeded from the Stage 1 manifest,
-     the bootstrap brief, and available mapping information rather than corpus comparison
-   - leave `nearest_existing_cases` empty for those gaps
-9. `coverage_summary.bootstrap_reason` is bootstrap-only. Never populate it when mode is `coverage_aware`,
-   including when coverage is found via file-based fallback.
-10. Classify each risk flag as covered, boundary_shift, or uncovered.
-11. Output CoverageGapManifest JSON only. Do not generate probes.
+1. For each artifact, inspect its rule resolution and discovery order.
+2. Use `fetch_eval_target_snapshot` for explicit preferred targets first.
+3. If needed, use `discover_eval_targets` on the same platform for recovery.
+4. Use `discover_target_evaluators` before relying on row inference whenever evaluator reuse might matter.
+5. Use `read_evaluator_binding` and `verify_evaluator_binding` to inspect and confirm formal bindings when the platform supports it.
+6. Use `list_platform_evaluator_capabilities` to understand which formal discovery and verification surfaces exist for the target platform.
+7. If repo-local eval assets or scorer/judge code are plausible, use `discover_repo_eval_assets` and `read_repo_eval_asset`.
+8. Compare the changed behavior against the discovered corpus. Use embeddings and similarity tools when they help validate novelty, but do not rely on similarity alone when native assertions, evaluator regime, or harness structure provide stronger evidence.
+9. Prefer targets whose discovered method profile, evaluator regime, row shape, and conventions align with the artifact and risk brief.
+10. For each artifact/risk slice, classify coverage as `covered`, `boundary_shift`, or `uncovered`.
+11. When real coverage is missing, emit a gap dossier that preserves enough target/method context for synthesis to produce native-feeling evals.
+12. If no usable target exists, create bootstrap targets and bootstrap gaps rather than omitting the artifact.
+13. Output EvalAnalysisManifest JSON only. No prose.
 """
 
 
@@ -77,12 +85,12 @@ def strip_raw_diffs(stage1_manifest: dict) -> dict:
 def render_stage2_prompt(
     stage1_manifest: dict,
     *,
-    mapping_resolutions: list[dict[str, Any]] | None = None,
+    rule_resolutions: list[dict[str, Any]] | None = None,
     bootstrap_brief: dict[str, Any] | None = None,
 ) -> str:
     stripped = strip_raw_diffs(stage1_manifest)
     return STAGE2_SYSTEM_TEMPLATE.format(
         manifest_json=json.dumps(stripped, indent=2),
-        mapping_resolutions_json=json.dumps(mapping_resolutions or [], indent=2),
+        rule_resolutions_json=json.dumps(rule_resolutions or [], indent=2),
         bootstrap_brief_json=json.dumps(bootstrap_brief or {}, indent=2),
     )

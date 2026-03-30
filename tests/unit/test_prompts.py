@@ -29,7 +29,7 @@ def test_stage1_prompt_allows_unchanged_supporting_file_reads() -> None:
     assert "Use Read and Glob to follow imports" in prompt
 
 
-def test_stage2_prompt_includes_bootstrap_instructions() -> None:
+def test_stage2_prompt_includes_topology_discovery_instructions() -> None:
     prompt = render_stage2_prompt(
         {
             "run_id": "stage1-run",
@@ -40,12 +40,12 @@ def test_stage2_prompt_includes_bootstrap_instructions() -> None:
                 }
             ],
         },
-        mapping_resolutions=[
+        rule_resolutions=[
             {
                 "artifact_path": "prompts/answer.md",
-                "mapping_status": "explicit",
-                "platform": "langsmith",
-                "target": "answer-regression",
+                "rule_status": "explicit",
+                "preferred_platform": "langsmith",
+                "preferred_target": "answer-regression",
             }
         ],
         bootstrap_brief={
@@ -60,28 +60,20 @@ def test_stage2_prompt_includes_bootstrap_instructions() -> None:
         },
     )
 
-    assert "switch to bootstrap mode" in prompt
-    assert "leave `nearest_existing_cases` empty" in prompt
-    assert "remain in coverage-aware mode" in prompt
-    assert "`coverage_summary.retrieval_notes`" in prompt
-    assert "Never populate it when mode is `coverage_aware`" in prompt
-    assert "RESOLVED DATASET MAPPINGS" in prompt
-    assert "BOOTSTRAP BRIEF" in prompt
-    assert "Do not inspect `parity.yaml`" in prompt
-    assert "preferred starting point, not as infallible ground truth" in prompt
-    assert "limited platform-side discovery" in prompt
-    assert "Record that recovery in" in prompt
-    assert "`search_eval_targets`" in prompt
-    assert "`fetch_eval_cases`" in prompt
-    assert "`embed_batch`" in prompt
-    assert "`budget_exceeded: true`" in prompt
-    assert "returned cached embeddings" in prompt
-    assert "`find_similar_batch`" in prompt
-    assert "do not flatten unrelated artifacts or unrelated datasets into one batch" in prompt
-    assert '"target": "answer-regression"' in prompt
+    assert "discover_eval_targets" in prompt
+    assert "fetch_eval_target_snapshot" in prompt
+    assert "discover_target_evaluators" in prompt
+    assert "read_evaluator_binding" in prompt
+    assert "verify_evaluator_binding" in prompt
+    assert "discover_repo_eval_assets" in prompt
+    assert "list_platform_evaluator_capabilities" in prompt
+    assert "Preserve the native case shape" in prompt
+    assert "Discover evaluator regime" in prompt
+    assert "output evalanalysismanifest json only" in prompt.lower()
+    assert '"preferred_target": "answer-regression"' in prompt
 
 
-def test_stage3_prompt_describes_bootstrap_mode() -> None:
+def test_stage3_prompt_describes_native_eval_synthesis() -> None:
     context = ContextPack(
         product="Acme assistant for support questions.",
         users="Support agents and end users.",
@@ -106,36 +98,77 @@ def test_stage3_prompt_describes_bootstrap_mode() -> None:
             ],
         },
         {
-            "coverage_summary": {
-                "total_relevant_cases": 0,
-                "cases_covering_changed_behavior": 0,
-                "coverage_ratio": 0.0,
-                "mode": "bootstrap",
-                "corpus_status": "empty",
-                "bootstrap_reason": "No existing eval cases were found for this agent.",
-            },
+            "resolved_targets": [
+                {
+                    "profile": {
+                        "target_id": "promptfoo::evals/promptfooconfig.yaml",
+                        "platform": "promptfoo",
+                        "locator": "evals/promptfooconfig.yaml",
+                        "target_name": "evals/promptfooconfig.yaml",
+                        "artifact_paths": ["prompts/answer.md"],
+                        "resolution_source": "config_rule",
+                        "access_mode": "file",
+                        "write_capability": "native_ready",
+                        "profile_confidence": 0.9
+                    },
+                    "method_profile": {
+                        "method_kind": "hybrid",
+                        "renderability_status": "native_ready",
+                        "supports_multi_assert": True,
+                        "evaluator_scope": "row_local",
+                        "execution_surface": "config_file",
+                        "binding_candidates": [{"binding_id": "promptfoo::llm-rubric"}]
+                    },
+                    "resolution_notes": ["Matched configured promptfoo target."]
+                }
+            ],
+            "coverage_by_target": [
+                {
+                    "target_id": "promptfoo::evals/promptfooconfig.yaml",
+                    "method_kind": "hybrid",
+                    "coverage_ratio": 0.0,
+                    "mode": "coverage_aware",
+                    "corpus_status": "available",
+                    "profile_status": "confirmed",
+                }
+            ],
             "gaps": [
                 {
                     "gap_id": "gap_001",
+                    "target_id": "promptfoo::evals/promptfooconfig.yaml",
                     "artifact_path": "prompts/answer.md",
+                    "method_kind": "hybrid",
                     "gap_type": "uncovered",
                     "related_risk_flag": "Casual questions may receive citations unexpectedly",
-                    "description": "No baseline coverage exists yet.",
-                    "nearest_existing_cases": [],
+                    "description": "No native coverage exists yet.",
+                    "why_gap_is_real": "Existing promptfoo cases only cover factual citation behavior.",
+                    "recommended_eval_area": "conversation_boundary",
+                    "recommended_eval_mode": "hybrid",
+                    "native_shape_hints": [
+                        "Use vars.messages for multi-turn probes."
+                    ],
+                    "compatible_nearest_cases": [],
+                    "repo_asset_refs": [],
                     "priority": "high",
+                    "profile_status": "confirmed",
                     "guardrail_direction": None,
                     "is_conversational": False,
+                    "confidence": 0.84
                 }
             ],
         },
         context,
-        proposal_probe_limit=4,
-        candidate_probe_pool_limit=10,
+        proposal_limit=4,
+        candidate_intent_pool_limit=10,
     )
 
-    assert "COVERAGE SUMMARY" in prompt
-    assert '"mode": "bootstrap"' in prompt
-    assert "there is no usable eval corpus for comparison" in prompt
-    assert "Generate up to 10 candidate probes" in prompt
-    assert "keep at most 4 final proposal probes" in prompt
-    assert "Return the full candidate pool in `probes`" in prompt
+    assert "STAGE 2 ANALYSIS SUMMARY" in prompt
+    assert "HOST-OWNED EVIDENCE TOOLS" in prompt
+    assert "list_evaluator_dossiers" in prompt
+    assert "read_evaluator_dossier" in prompt
+    assert "native-feeling row attributes" in prompt
+    assert "evaluator_dossier_id" in prompt
+    assert "preferred_evaluator_binding" in prompt
+    assert "Generate up to 10 candidate intents" in prompt
+    assert "keep at most 4 final intents" in prompt
+    assert "Output EvalIntentCandidateBundle JSON only" in prompt

@@ -52,13 +52,21 @@ PROCESS:
      output_schema | schema_validator | retry_policy | fallback_prompt | unknown
 7. Infer the intended change for each artifact. Compare against PR description. Flag contradictions.
 8. Identify unintended risks, including guardrail false-negative and false-positive shifts.
+9. For each behavioral artifact, capture compact evidence that will help downstream eval discovery:
+     - `behavioral_signatures`: exact phrases, field names, policy terms, tool names, classifier labels, schema keys
+     - `changed_entities`: named prompts, tools, judges, validators, schemas, routes, classifiers
+     - `observable_delta`: before vs after user-visible behavior
+     - `eval_search_hints`: short phrases downstream can use to search existing evals
+     - `validation_focus`: likely eval modalities that best catch the change (judge, deterministic, conversation, tool trace, etc.)
+     - `evidence_snippets`: short before/after excerpts or diff snippets, not full raw diffs
 9. IF YOU FOUND NO BEHAVIORAL CHANGES (no artifacts in your analysis):
    - Set has_changes to false
    - Set overall_risk to "low"
    - Set changes array to empty []
    - Set compound_change_detected to false
    - This is a valid, complete response. Return it as JSON.
-10. Output BehaviorChangeManifest JSON only. No prose.
+10. Keep the downstream brief compact and retrieval-friendly. Prefer exact anchors over generic summaries.
+11. Output BehaviorChangeManifest JSON only. No prose.
 """
 
 

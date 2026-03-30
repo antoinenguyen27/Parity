@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-from parity.models.manifests import CoverageGap
-from parity.models.probes import ProbeCase
 from parity.tools.similarity import (
     classify_embedding_against_corpus,
     classify_embeddings_against_corpus,

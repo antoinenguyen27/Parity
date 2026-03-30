@@ -17,10 +17,11 @@ from parity.config import (
     BraintrustPlatformConfig,
     ContextConfig,
     EmbeddingConfig,
+    EvalRuleConfig,
+    EvalsConfig,
     GenerationConfig,
     ParityConfig,
     LangSmithPlatformConfig,
-    MappingConfig,
     PlatformsConfig,
     PromptfooPlatformConfig,
     SimilarityConfig,
@@ -229,7 +230,7 @@ jobs:
           ")
           echo "has_changes=$has_changes" >> $GITHUB_OUTPUT
 
-      - name: Stage 2 — Coverage Analysis
+      - name: Stage 2 — Eval Analysis
         if: steps.gate.outputs.has_changes == 'true'
         run: |
           parity run-stage 2 \\
@@ -242,15 +243,13 @@ jobs:
           BRAINTRUST_API_KEY: ${{ secrets.BRAINTRUST_API_KEY }}
           PHOENIX_API_KEY: ${{ secrets.PHOENIX_API_KEY }}
 
-      - name: Stage 3 — Eval Generation
+      - name: Stage 3 — Native Eval Synthesis
         if: steps.gate.outputs.has_changes == 'true'
         run: |
           parity run-stage 3 \\
             --manifest .parity/stage1.json \\
-            --gaps .parity/stage2.json \\
+            --analysis .parity/stage2.json \\
             --output .parity/stage3.json
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Upload artifacts
         if: always()
@@ -345,7 +344,7 @@ jobs:
         id: write
         continue-on-error: true
         run: |
-          parity write-probes \\
+          parity write-evals \\
             --proposal .parity/stage3.json \\
             --config parity.yaml \\
             --outcome-output .parity/write-outcome.json \\
@@ -536,20 +535,20 @@ def init_command(context_only: bool, dry_run: bool) -> None:
         platforms = _selected_platforms()
         mapping_platform = _default_mapping_platform(platforms)
 
-        mappings: list[MappingConfig] = []
+        rules: list[EvalRuleConfig] = []
         if mapping_platform:
             for artifact in behavior + guardrails:
-                dataset = click.prompt(
-                    f"4. For artifact '{artifact}', which dataset contains existing evals for this artifact? (blank to start in bootstrap mode)",
+                target = click.prompt(
+                    f"4. For artifact '{artifact}', which target or config path contains existing evals? (blank to allow discovery/bootstrap)",
                     default="",
                     show_default=False,
                 ).strip()
-                if dataset:
-                    mappings.append(
-                        MappingConfig(
+                if target:
+                    rules.append(
+                        EvalRuleConfig(
                             artifact=artifact,
-                            platform=mapping_platform,  # type: ignore[arg-type]
-                            dataset=dataset,
+                            preferred_platform=mapping_platform,  # type: ignore[arg-type]
+                            preferred_target=target,
                         )
                     )
 
@@ -563,7 +562,7 @@ def init_command(context_only: bool, dry_run: bool) -> None:
             guardrail_artifacts=ArtifactDetectionConfig(paths=guardrails, python_patterns=list(PYTHON_GUARDRAIL_PATTERNS)),
             context=ContextConfig(),
             platforms=platforms,
-            mappings=mappings,
+            evals=EvalsConfig(rules=rules),
             embedding=EmbeddingConfig(),
             similarity=SimilarityConfig(),
             generation=GenerationConfig(),

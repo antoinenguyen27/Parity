@@ -3,6 +3,12 @@
 ## 2026-03-30
 
 ### Changed
+- Pipeline contract is now fully method-first: `Stage 1` behavior analysis, `Stage 2` eval analysis, `Stage 3` native eval synthesis, and deterministic writeback via `parity write-evals`.
+- Stage 2 now owns full eval analysis rather than target discovery only. It resolves targets, preserves native sample rows, validates real gaps, and emits `EvalAnalysisManifest`.
+- Stage 3 now synthesizes against Stage 2 evidence through dedicated dossier/sample tools rather than flattened summaries.
+- Formal-first evaluator discovery was added where supported, with inference retained as fallback.
+- Evaluator handling is now discovery-and-reuse only. Hosted evaluator mutation, rebinding, and creation were removed from the product contract and CLI surface.
+- Runtime artifacts and docs now align around `BehaviorChangeManifest`, `EvalAnalysisManifest`, and `EvalProposalManifest`.
 - Stage 1 is now explicitly read-only at the tool-policy layer: wide repo reads remain allowed, but Bash is confined to read-only git inspection and secret-bearing/generated paths are denied.
 - Stage 2 now uses a host-owned in-process SDK MCP toolbox for eval retrieval, discovery, embeddings, and similarity checks. The analyzer no longer relies on generic Bash or writes secret-bearing `.claude/mcp_servers.json` in CI.
 - Stage 3 now runs without built-in tools. Proposal generation remains unchanged, but the agent no longer has an unnecessary tool surface.

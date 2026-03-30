@@ -13,12 +13,41 @@ from parity.errors import ConfigError
 from parity.models._base import ParityModel
 
 PlatformName = Literal["langsmith", "braintrust", "arize_phoenix", "promptfoo"]
+MethodKind = Literal[
+    "deterministic",
+    "judge",
+    "hybrid",
+    "pairwise",
+    "human_review",
+    "trajectory",
+    "unknown",
+]
 
-DEFAULT_ANALYSIS_TOTAL_SPEND_CAP_USD = 2.25
-DEFAULT_STAGE1_AGENT_SPEND_RATIO = 0.35
-DEFAULT_STAGE2_AGENT_SPEND_RATIO = 0.20
-DEFAULT_STAGE2_EMBEDDING_SPEND_RATIO = 0.15
-DEFAULT_STAGE3_AGENT_SPEND_RATIO = 0.30
+DEFAULT_ANALYSIS_TOTAL_SPEND_CAP_USD = 2.50
+DEFAULT_STAGE1_AGENT_SPEND_RATIO = 0.30
+DEFAULT_STAGE2_AGENT_SPEND_RATIO = 0.18
+DEFAULT_STAGE2_EMBEDDING_SPEND_RATIO = 0.12
+DEFAULT_STAGE3_AGENT_SPEND_RATIO = 0.40
+
+DEFAULT_REPO_ASSET_GLOBS = [
+    "promptfooconfig.yaml",
+    "promptfooconfig.yml",
+    "**/promptfooconfig.yaml",
+    "**/promptfooconfig.yml",
+    "**/*promptfoo*.yaml",
+    "**/*promptfoo*.yml",
+    "**/eval*.yaml",
+    "**/eval*.yml",
+    "**/*eval*.py",
+    "**/*eval*.ts",
+    "**/*eval*.js",
+    "**/*judge*.py",
+    "**/*judge*.ts",
+    "**/*judge*.js",
+    "**/*scorer*.py",
+    "**/*scorer*.ts",
+    "**/*scorer*.js",
+]
 
 
 class ArtifactDetectionConfig(ParityModel):
@@ -69,15 +98,76 @@ class PlatformsConfig(ParityModel):
     promptfoo: PromptfooPlatformConfig | None = None
 
 
-class MappingConfig(ParityModel):
+class EvalDiscoveryConfig(ParityModel):
+    repo_asset_globs: list[str] = Field(default_factory=lambda: list(DEFAULT_REPO_ASSET_GLOBS))
+    platform_discovery_order: list[PlatformName] = Field(default_factory=list)
+    sample_limit_per_target: int = 20
+    allow_repo_asset_discovery: bool = True
+
+    @field_validator("sample_limit_per_target")
+    @classmethod
+    def validate_sample_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("sample_limit_per_target must be positive")
+        return value
+
+
+class EvalRuleConfig(ParityModel):
     artifact: str
-    platform: PlatformName
-    dataset: str | None = None
-    project: str | None = None
-    eval_type: str | None = None
+    preferred_platform: PlatformName | None = None
+    preferred_target: str | None = None
+    preferred_project: str | None = None
+    allowed_methods: list[MethodKind] = Field(default_factory=list)
+    preferred_methods: list[MethodKind] = Field(default_factory=list)
+    repo_asset_hints: list[str] = Field(default_factory=list)
 
     def matches(self, artifact_path: str) -> bool:
         return fnmatch.fnmatch(artifact_path, self.artifact)
+
+    @model_validator(mode="after")
+    def validate_method_preferences(self) -> "EvalRuleConfig":
+        if self.allowed_methods and self.preferred_methods:
+            disallowed = [method for method in self.preferred_methods if method not in self.allowed_methods]
+            if disallowed:
+                raise ValueError(
+                    "preferred_methods must be a subset of allowed_methods when both are configured"
+                )
+        return self
+
+
+class EvalWriteConfig(ParityModel):
+    require_native_rendering: bool = True
+    min_render_confidence: float = 0.70
+    create_missing_targets: bool = False
+    allow_review_only_exports: bool = True
+
+    @field_validator("min_render_confidence")
+    @classmethod
+    def validate_confidence(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("min_render_confidence must be between 0 and 1")
+        return value
+
+
+class EvalEvaluatorConfig(ParityModel):
+    formal_discovery_required: bool = False
+    allow_inference_fallback: bool = True
+    require_binding_verification: bool = False
+    min_binding_confidence: float = 0.85
+
+    @field_validator("min_binding_confidence")
+    @classmethod
+    def validate_confidence(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("min_binding_confidence must be between 0 and 1")
+        return value
+
+
+class EvalsConfig(ParityModel):
+    discovery: EvalDiscoveryConfig = Field(default_factory=EvalDiscoveryConfig)
+    rules: list[EvalRuleConfig] = Field(default_factory=list)
+    write: EvalWriteConfig = Field(default_factory=EvalWriteConfig)
+    evaluators: EvalEvaluatorConfig = Field(default_factory=EvalEvaluatorConfig)
 
 
 class EmbeddingConfig(ParityModel):
@@ -99,37 +189,36 @@ class SimilarityConfig(ParityModel):
 
 
 class GenerationConfig(ParityModel):
-    proposal_probe_limit: int = 8
-    candidate_probe_pool_limit: int | None = None
+    proposal_limit: int = 8
+    candidate_intent_pool_limit: int | None = None
     diversity_limit_per_gap: int = 2
 
-    @field_validator("proposal_probe_limit", "diversity_limit_per_gap")
+    @field_validator("proposal_limit", "diversity_limit_per_gap")
     @classmethod
     def validate_positive_ints(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("generation limits must be positive integers")
         return value
 
-    @field_validator("candidate_probe_pool_limit")
+    @field_validator("candidate_intent_pool_limit")
     @classmethod
-    def validate_candidate_probe_pool_limit(cls, value: int | None) -> int | None:
+    def validate_candidate_intent_pool_limit(cls, value: int | None) -> int | None:
         if value is not None and value <= 0:
-            raise ValueError("candidate_probe_pool_limit must be positive when provided")
+            raise ValueError("candidate_intent_pool_limit must be positive when provided")
         return value
 
     @model_validator(mode="after")
     def validate_generation_relationships(self) -> "GenerationConfig":
-        if (
-            self.candidate_probe_pool_limit is not None
-            and self.candidate_probe_pool_limit < self.proposal_probe_limit
-        ):
-            raise ValueError("candidate_probe_pool_limit must be greater than or equal to proposal_probe_limit")
+        if self.candidate_intent_pool_limit is not None and self.candidate_intent_pool_limit < self.proposal_limit:
+            raise ValueError(
+                "candidate_intent_pool_limit must be greater than or equal to proposal_limit"
+            )
         return self
 
-    def resolve_candidate_probe_pool_limit(self) -> int:
-        if self.candidate_probe_pool_limit is not None:
-            return self.candidate_probe_pool_limit
-        derived = math.ceil(self.proposal_probe_limit * 2.5)
+    def resolve_candidate_intent_pool_limit(self) -> int:
+        if self.candidate_intent_pool_limit is not None:
+            return self.candidate_intent_pool_limit
+        derived = math.ceil(self.proposal_limit * 2.5)
         return max(12, min(derived, 24))
 
 
@@ -138,8 +227,6 @@ class ApprovalConfig(ParityModel):
 
 
 class AutoRunConfig(ParityModel):
-    # Reserved for v2: auto_run config is parsed and stored but not yet executed.
-    # The auto-run pipeline (platform-specific eval triggers + results post-back) is planned.
     enabled: bool = True
     fail_on: str | None = "regression_guard"
     notify: str | None = "pr_comment"
@@ -175,14 +262,12 @@ class SpendConfig(ParityModel):
         ]
         any_stage_caps = any(value is not None for value in stage_caps)
         all_stage_caps = all(value is not None for value in stage_caps)
-
         if any_stage_caps and not all_stage_caps:
             raise ValueError(
                 "stage-specific spend overrides must all be set together: "
-                "stage1_agent_cap_usd, stage2_agent_cap_usd, "
-                "stage2_embedding_cap_usd, and stage3_agent_cap_usd"
+                "stage1_agent_cap_usd, stage2_agent_cap_usd, stage2_embedding_cap_usd, "
+                "and stage3_agent_cap_usd"
             )
-
         if all_stage_caps:
             total = sum(value for value in stage_caps if value is not None)
             configured_total = self.analysis_total_spend_cap_usd
@@ -190,7 +275,6 @@ class SpendConfig(ParityModel):
                 raise ValueError(
                     "analysis_total_spend_cap_usd must match the sum of the explicit stage-specific spend caps"
                 )
-
         return self
 
 
@@ -205,12 +289,12 @@ class ResolvedSpendCaps:
 
 
 class ParityConfig(ParityModel):
-    version: int = 1
+    version: int = 2
     behavior_artifacts: ArtifactDetectionConfig = Field(default_factory=ArtifactDetectionConfig)
     guardrail_artifacts: ArtifactDetectionConfig = Field(default_factory=ArtifactDetectionConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     platforms: PlatformsConfig = Field(default_factory=PlatformsConfig)
-    mappings: list[MappingConfig] = Field(default_factory=list)
+    evals: EvalsConfig = Field(default_factory=EvalsConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     similarity: SimilarityConfig = Field(default_factory=SimilarityConfig)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
@@ -243,11 +327,25 @@ class ParityConfig(ParityModel):
         base = Path(repo_root) if repo_root is not None else Path.cwd()
         return base / path
 
-    def find_mapping(self, artifact_path: str) -> MappingConfig | None:
-        for mapping in self.mappings:
-            if mapping.matches(artifact_path):
-                return mapping
+    def find_eval_rule(self, artifact_path: str) -> EvalRuleConfig | None:
+        for rule in self.evals.rules:
+            if rule.matches(artifact_path):
+                return rule
         return None
+
+    def resolve_platform_discovery_order(self, preferred_platform: PlatformName | None = None) -> list[PlatformName]:
+        ordered: list[PlatformName] = []
+        if preferred_platform is not None:
+            ordered.append(preferred_platform)
+        for platform in self.evals.discovery.platform_discovery_order:
+            if platform not in ordered:
+                ordered.append(platform)
+        for platform in ("langsmith", "braintrust", "arize_phoenix", "promptfoo"):
+            if getattr(self.platforms, platform, None) is not None and platform not in ordered:
+                ordered.append(platform)  # type: ignore[arg-type]
+        if "promptfoo" not in ordered and self.evals.discovery.allow_repo_asset_discovery:
+            ordered.append("promptfoo")
+        return ordered
 
     def resolve_spend_caps(self) -> ResolvedSpendCaps:
         spend = self.spend
@@ -279,3 +377,7 @@ class ParityConfig(ParityModel):
             stage3_agent_cap_usd=total * DEFAULT_STAGE3_AGENT_SPEND_RATIO,
             source=source,
         )
+
+
+# Backward-compatible internal alias while init/workflow helpers are updated.
+MappingConfig = EvalRuleConfig

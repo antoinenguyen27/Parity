@@ -1,75 +1,285 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "run_id": "stage3-demo",
   "stage1_run_id": "stage1-demo",
   "stage2_run_id": "stage2-demo",
+  "stage3_run_id": "stage3-demo",
   "timestamp": "2026-03-14T05:02:00Z",
-  "pr_number": 17,
-  "commit_sha": "deadbeef",
-  "probe_count": 3,
-  "probes": [
+  "pr_number": 1,
+  "commit_sha": "demo-sha",
+  "intent_count": 3,
+  "targets": [
     {
-      "probe_id": "probe_001",
-      "gap_id": "gap_001",
-      "probe_type": "regression_guard",
-      "is_conversational": false,
-      "input": "What are the main causes of reward hacking that Lilian Weng identifies?",
-      "input_format": "string",
-      "expected_behavior": "The answer cites the reward hacking blog post as its source. It does not cite the hallucination or diffusion-video post, and does not omit a citation entirely.",
-      "expected_behavior_type": "llm_rubric",
-      "rubric": "The response must include a citation attributing the claims to the reward hacking post (e.g., 'According to the reward hacking post' or equivalent phrasing). A response with no citation is a failure. A response that attributes reward-hacking content to the hallucination or diffusion-video post is a failure.",
-      "probe_rationale": "This question has a clear, unambiguous answer in the reward-hacking post. It is the simplest possible citation test: one question, one source. If the model fails here — either omitting a citation or naming the wrong post — it reveals that the citation instruction is not being followed, or that the model cannot infer source identity from raw chunk text.",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "nearest_existing_case_id": "lilian-reward-hacking-types",
-      "nearest_existing_similarity": 0.74,
-      "specificity_confidence": 0.96,
-      "testability_confidence": 0.97,
-      "realism_confidence": 0.94,
-      "approved": false
-    },
-    {
-      "probe_id": "probe_002",
-      "gap_id": "gap_002",
-      "probe_type": "boundary_probe",
-      "is_conversational": false,
-      "input": "Do both the hallucination post and the reward hacking post discuss problems that arise from optimizing a flawed objective?",
-      "input_format": "string",
-      "expected_behavior": "If the model answers, it correctly attributes the hallucination-related claim to the hallucination post and the reward-hacking-related claim to the reward hacking post. It does not cross-attribute claims between posts.",
-      "expected_behavior_type": "llm_rubric",
-      "rubric": "The response must attribute each claim to the correct post. Attributing a hallucination concept (e.g., training data noise, fine-tuning drift) to the reward hacking post, or attributing a reward-hacking concept (e.g., Goodhart's Law, specification gaming) to the hallucination post, is a failure. A response that acknowledges both posts exist but declines to attribute due to uncertainty is acceptable.",
-      "probe_rationale": "This question deliberately requires the model to draw from two blog posts simultaneously. Without source metadata, the model must attribute each claim to the correct post from content cues alone. A cross-post attribution error here is the clearest demonstration of what happens when the citation instruction meets a retriever that does not expose source information.",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "nearest_existing_case_id": "lilian-diffusion-lumiere",
-      "nearest_existing_similarity": 0.61,
-      "specificity_confidence": 0.91,
-      "testability_confidence": 0.89,
-      "realism_confidence": 0.90,
-      "approved": false
-    },
-    {
-      "probe_id": "probe_003",
-      "gap_id": "gap_003",
-      "probe_type": "overcorrection_probe",
-      "is_conversational": false,
-      "input": "What does Lilian Weng say about the role of human feedback in model training?",
-      "input_format": "string",
-      "expected_behavior": "The model either cites the correct post (reward hacking or hallucination, where human feedback is discussed) without fabricating a source, or explicitly states it cannot identify the source and omits the citation. It does not produce a placeholder citation such as 'according to the blog post' that satisfies the instruction syntactically but attributes nothing.",
-      "expected_behavior_type": "llm_rubric",
-      "rubric": "The response is a failure if it: (1) names a blog post that does not cover human feedback (e.g., the diffusion-video post), (2) provides a fabricated URL or title, or (3) uses a vague placeholder like 'the blog post' or 'the source' that does not identify which post. A response that names the correct post or honestly omits the citation is a pass.",
-      "probe_rationale": "Human feedback appears in both the reward hacking and hallucination posts in different contexts. Retrieved chunks may not contain enough surrounding text to disambiguate which post they came from. This tests whether the model actually refrains from fabricating when uncertain, or whether it produces a plausible-sounding but wrong citation — the subtlest failure mode the citation change introduces.",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "nearest_existing_case_id": "lilian-unsupported-moe",
-      "nearest_existing_similarity": 0.55,
-      "specificity_confidence": 0.88,
-      "testability_confidence": 0.87,
-      "realism_confidence": 0.92,
-      "approved": false
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "platform": "langsmith",
+      "locator": "lilian-weng-rag-baseline",
+      "target_name": "lilian-weng-rag-baseline",
+      "dataset_id": "demo-dataset-id",
+      "project": null,
+      "artifact_paths": [
+        "app/graph.py"
+      ],
+      "resolution_source": "config_rule",
+      "access_mode": "mcp",
+      "write_capability": "native_ready",
+      "profile_confidence": 0.88
     }
   ],
-  "export_formats": {
-    "promptfoo": ".probegen/runs/deadbeef/probes.yaml",
-    "deepeval": null,
-    "raw_json": ".probegen/runs/deadbeef/ProbeProposal.json"
-  },
+  "intents": [
+    {
+      "intent_id": "intent_001",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:01",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "intent_type": "regression_guard",
+      "title": "Single-source factual answer includes a grounded citation",
+      "is_conversational": false,
+      "input": "According to Lilian Weng, what are the two broad types of reward hacking?",
+      "input_format": "string",
+      "behavior_under_test": "The assistant answers the factual question correctly and cites the reward hacking post rather than adding an unsupported source label.",
+      "pass_criteria": "The answer names environment hacking and training-process hacking, and the rubric should confirm that the cited source is the reward hacking post.",
+      "failure_mode": "The assistant answers correctly but omits the citation or cites the wrong post.",
+      "probe_rationale": "This is the simplest high-confidence regression guard for the new citation requirement.",
+      "related_risk_flag": "Retrieved context is assembled from raw page_content only, so the model may fabricate or misattribute citations when chunks are ambiguous.",
+      "native_input_binding": "query",
+      "preferred_evaluator_binding": null,
+      "native_metadata_hints": {
+        "assertion_type": "judge",
+        "rubric_style": "source_grounding"
+      },
+      "native_tag_hints": [
+        "citation_regression"
+      ],
+      "native_assertion_hints": [
+        "llm-rubric"
+      ],
+      "native_shape_notes": [
+        "Preserve the existing LangSmith dataset-example shape.",
+        "Store the grading rubric in metadata, not in a separate generic probe field."
+      ],
+      "nearest_existing_case_id": "lilian-reward-hacking-types",
+      "nearest_existing_similarity": 0.71,
+      "specificity_confidence": 0.93,
+      "testability_confidence": 0.91,
+      "novelty_confidence": 0.74,
+      "realism_confidence": 0.89,
+      "target_fit_confidence": 0.94
+    },
+    {
+      "intent_id": "intent_002",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:02",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "intent_type": "boundary_probe",
+      "title": "Cross-post answer cites the right posts for each claim",
+      "is_conversational": false,
+      "input": "Compare what the hallucination post says about FActScore with what the diffusion-video post says about Lumiere.",
+      "input_format": "string",
+      "behavior_under_test": "The assistant keeps the two source posts distinct and attributes each claim to the correct post.",
+      "pass_criteria": "The rubric should confirm that FActScore is attributed to the hallucination post and Lumiere is attributed to the diffusion-video post without collapsing them into a single source.",
+      "failure_mode": "The assistant conflates the two posts or cites the wrong source for one side of the comparison.",
+      "probe_rationale": "This stresses the multi-source attribution boundary introduced by the citation instruction.",
+      "related_risk_flag": "Cross-post attribution may fail when multiple blog posts are retrieved together.",
+      "native_input_binding": "query",
+      "preferred_evaluator_binding": null,
+      "native_metadata_hints": {
+        "assertion_type": "judge",
+        "rubric_style": "source_separation"
+      },
+      "native_tag_hints": [
+        "citation_boundary"
+      ],
+      "native_assertion_hints": [
+        "llm-rubric"
+      ],
+      "native_shape_notes": [
+        "Use a judge rubric that explicitly grades attribution separation across posts."
+      ],
+      "nearest_existing_case_id": "lilian-diffusion-lumiere",
+      "nearest_existing_similarity": 0.63,
+      "specificity_confidence": 0.9,
+      "testability_confidence": 0.87,
+      "novelty_confidence": 0.81,
+      "realism_confidence": 0.86,
+      "target_fit_confidence": 0.92
+    },
+    {
+      "intent_id": "intent_003",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:03",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "intent_type": "overcorrection_probe",
+      "title": "Ambiguous source question should avoid fabricated citation",
+      "is_conversational": false,
+      "input": "Which Lilian Weng post talks about temporal consistency, and what does it say?",
+      "input_format": "string",
+      "behavior_under_test": "The assistant avoids inventing a source label when the retrieved text does not make the source unambiguous.",
+      "pass_criteria": "The rubric should confirm that the answer either cites the correct post with strong evidence or explicitly states uncertainty rather than fabricating an attribution.",
+      "failure_mode": "The assistant fabricates a confident citation to the wrong post.",
+      "probe_rationale": "This tests whether the new citation requirement overcorrects into unsupported source claims.",
+      "related_risk_flag": "The model may fabricate a source label when the retrieved text does not make the originating post identifiable.",
+      "native_input_binding": "query",
+      "preferred_evaluator_binding": null,
+      "native_metadata_hints": {
+        "assertion_type": "judge",
+        "rubric_style": "citation_restraint"
+      },
+      "native_tag_hints": [
+        "citation_ambiguity"
+      ],
+      "native_assertion_hints": [
+        "llm-rubric"
+      ],
+      "native_shape_notes": [
+        "Judge for calibrated uncertainty, not forced exactness."
+      ],
+      "nearest_existing_case_id": "lilian-unsupported-moe",
+      "nearest_existing_similarity": 0.58,
+      "specificity_confidence": 0.88,
+      "testability_confidence": 0.84,
+      "novelty_confidence": 0.83,
+      "realism_confidence": 0.84,
+      "target_fit_confidence": 0.9
+    }
+  ],
+  "renderings": [
+    {
+      "rendering_id": "render-intent_001",
+      "intent_id": "intent_001",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "rendering_kind": "dataset_example",
+      "renderer_id": "langsmith/dataset_example",
+      "write_status": "native_ready",
+      "render_confidence": 0.92,
+      "target_locator": "lilian-weng-rag-baseline",
+      "payload": {
+        "inputs": {
+          "query": "According to Lilian Weng, what are the two broad types of reward hacking?"
+        },
+        "outputs": {
+          "expected_behavior": "The answer names environment hacking and training-process hacking, and the rubric should confirm that the cited source is the reward hacking post."
+        },
+        "metadata": {
+          "generated_by": "parity",
+          "intent_type": "regression_guard",
+          "probe_rationale": "This is the simplest high-confidence regression guard for the new citation requirement.",
+          "failure_mode": "The assistant answers correctly but omits the citation or cites the wrong post.",
+          "related_risk_flag": "Retrieved context is assembled from raw page_content only, so the model may fabricate or misattribute citations when chunks are ambiguous.",
+          "method_kind": "judge",
+          "renderability": "native_ready",
+          "rubric": "The answer names environment hacking and training-process hacking, and the rubric should confirm that the cited source is the reward hacking post.",
+          "native_shape_notes": [
+            "Preserve the existing LangSmith dataset-example shape.",
+            "Store the grading rubric in metadata, not in a separate generic probe field."
+          ],
+          "assertion_type": "judge",
+          "rubric_style": "source_grounding"
+        },
+        "tags": [
+          "citation_regression",
+          "regression_guard",
+          "judge",
+          "parity"
+        ]
+      },
+      "file_path": null,
+      "patch": null,
+      "summary": "Dataset-native example payload ready for deterministic writeback.",
+      "abstention_reason": null,
+      "metadata": {}
+    },
+    {
+      "rendering_id": "render-intent_002",
+      "intent_id": "intent_002",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "rendering_kind": "dataset_example",
+      "renderer_id": "langsmith/dataset_example",
+      "write_status": "native_ready",
+      "render_confidence": 0.89,
+      "target_locator": "lilian-weng-rag-baseline",
+      "payload": {
+        "inputs": {
+          "query": "Compare what the hallucination post says about FActScore with what the diffusion-video post says about Lumiere."
+        },
+        "outputs": {
+          "expected_behavior": "The rubric should confirm that FActScore is attributed to the hallucination post and Lumiere is attributed to the diffusion-video post without collapsing them into a single source."
+        },
+        "metadata": {
+          "generated_by": "parity",
+          "intent_type": "boundary_probe",
+          "probe_rationale": "This stresses the multi-source attribution boundary introduced by the citation instruction.",
+          "failure_mode": "The assistant conflates the two posts or cites the wrong source for one side of the comparison.",
+          "related_risk_flag": "Cross-post attribution may fail when multiple blog posts are retrieved together.",
+          "method_kind": "judge",
+          "renderability": "native_ready",
+          "rubric": "The rubric should confirm that FActScore is attributed to the hallucination post and Lumiere is attributed to the diffusion-video post without collapsing them into a single source.",
+          "native_shape_notes": [
+            "Use a judge rubric that explicitly grades attribution separation across posts."
+          ],
+          "assertion_type": "judge",
+          "rubric_style": "source_separation"
+        },
+        "tags": [
+          "citation_boundary",
+          "boundary_probe",
+          "judge",
+          "parity"
+        ]
+      },
+      "file_path": null,
+      "patch": null,
+      "summary": "Dataset-native example payload ready for deterministic writeback.",
+      "abstention_reason": null,
+      "metadata": {}
+    },
+    {
+      "rendering_id": "render-intent_003",
+      "intent_id": "intent_003",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "rendering_kind": "dataset_example",
+      "renderer_id": "langsmith/dataset_example",
+      "write_status": "native_ready",
+      "render_confidence": 0.87,
+      "target_locator": "lilian-weng-rag-baseline",
+      "payload": {
+        "inputs": {
+          "query": "Which Lilian Weng post talks about temporal consistency, and what does it say?"
+        },
+        "outputs": {
+          "expected_behavior": "The rubric should confirm that the answer either cites the correct post with strong evidence or explicitly states uncertainty rather than fabricating an attribution."
+        },
+        "metadata": {
+          "generated_by": "parity",
+          "intent_type": "overcorrection_probe",
+          "probe_rationale": "This tests whether the new citation requirement overcorrects into unsupported source claims.",
+          "failure_mode": "The assistant fabricates a confident citation to the wrong post.",
+          "related_risk_flag": "The model may fabricate a source label when the retrieved text does not make the originating post identifiable.",
+          "method_kind": "judge",
+          "renderability": "native_ready",
+          "rubric": "The rubric should confirm that the answer either cites the correct post with strong evidence or explicitly states uncertainty rather than fabricating an attribution.",
+          "native_shape_notes": [
+            "Judge for calibrated uncertainty, not forced exactness."
+          ],
+          "assertion_type": "judge",
+          "rubric_style": "citation_restraint"
+        },
+        "tags": [
+          "citation_ambiguity",
+          "overcorrection_probe",
+          "judge",
+          "parity"
+        ]
+      },
+      "file_path": null,
+      "patch": null,
+      "summary": "Dataset-native example payload ready for deterministic writeback.",
+      "abstention_reason": null,
+      "metadata": {}
+    }
+  ],
+  "render_artifacts": [],
   "warnings": []
 }

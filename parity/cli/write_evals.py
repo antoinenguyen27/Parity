@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from collections import defaultdict
 from dataclasses import asdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,15 +15,17 @@ from parity.integrations.braintrust import BraintrustWriter
 from parity.integrations.langsmith import LangSmithWriter
 from parity.integrations.phoenix import PhoenixWriter
 from parity.integrations.promptfoo import PromptfooWriter
-from parity.models import CoverageGapManifest, ProbeCase, ProbeProposal
+from parity.models import EvalProposalManifest, NativeEvalRendering
 
 
 @dataclass
-class ProbeWriteOutcome:
+class EvalWriteOutcome:
     exit_code: int
     total_written: int = 0
     attempted_targets: list[str] = field(default_factory=list)
     written_targets: list[str] = field(default_factory=list)
+    skipped_review_only: list[str] = field(default_factory=list)
+    unsupported_targets: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
 
     @property
@@ -32,64 +33,73 @@ class ProbeWriteOutcome:
         return self.failures
 
 
-def _serialize_outcome(outcome: ProbeWriteOutcome) -> dict[str, object]:
+def _serialize_outcome(outcome: EvalWriteOutcome) -> dict[str, object]:
     return asdict(outcome)
 
 
-def _load_outcome(path: Path) -> ProbeWriteOutcome:
-    return ProbeWriteOutcome(**json.loads(path.read_text(encoding="utf-8")))
+def _load_outcome(path: Path) -> EvalWriteOutcome:
+    return EvalWriteOutcome(**json.loads(path.read_text(encoding="utf-8")))
 
 
-def _write_outcome(path: Path, outcome: ProbeWriteOutcome) -> None:
+def _write_outcome(path: Path, outcome: EvalWriteOutcome) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_serialize_outcome(outcome), indent=2), encoding="utf-8")
 
 
-def _load_optional_stage2(proposal_path: Path) -> CoverageGapManifest | None:
-    for candidate in ("stage2.json", "CoverageGapManifest.json"):
-        path = proposal_path.parent / candidate
-        if path.exists():
-            return CoverageGapManifest.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    return None
+def _target_label(platform: str, target_name: str, project: str | None) -> str:
+    if platform == "braintrust" and project:
+        return f"{platform}:{project}/{target_name}"
+    return f"{platform}:{target_name}"
 
 
-def _selected_probes(proposal: ProbeProposal) -> list[ProbeCase]:
-    # v1 uses label-based approval: no probe has approved=True in a normal pipeline run,
-    # so the fallback to proposal.probes writes the full set.  The per-probe path is
-    # retained for a future workflow where individual probes can be approved before merge.
-    approved = [probe for probe in proposal.probes if probe.approved]
-    return approved or proposal.probes
-
-
-def _target_label(platform: str, target: str | None, project: str | None) -> str:
-    if platform == "braintrust":
-        if project and target:
-            return f"{platform}:{project}/{target}"
-        return f"{platform}:{project or target or 'default'}"
-    return f"{platform}:{target or project or 'default'}"
-
-
-def _resolve_promptfoo_target(
-    target: str | None,
-    *,
-    config: ParityConfig,
-    repo_root: Path,
-) -> Path:
-    configured_target = target or (
+def _resolve_promptfoo_target(locator: str, *, config: ParityConfig, repo_root: Path) -> Path:
+    configured_target = locator or (
         config.platforms.promptfoo.config_path if config.platforms.promptfoo else "promptfooconfig.yaml"
     )
     resolved = config.resolve_path(configured_target, repo_root).resolve()
     try:
         resolved.relative_to(repo_root)
     except ValueError as exc:
-        raise ValueError(
-            f"Promptfoo write target must stay within the repository root: {configured_target}"
-        ) from exc
+        raise ValueError(f"Promptfoo write target must stay within the repository root: {configured_target}") from exc
     return resolved
 
 
+def _renderings_to_write(
+    proposal: EvalProposalManifest,
+    *,
+    config: ParityConfig,
+) -> tuple[dict[str, list[NativeEvalRendering]], list[str], list[str]]:
+    target_lookup = {target.target_id: target for target in proposal.targets}
+    grouped: dict[str, list[NativeEvalRendering]] = {}
+    review_only: list[str] = []
+    unsupported: list[str] = []
+
+    for rendering in proposal.renderings:
+        target = target_lookup.get(rendering.target_id)
+        if target is None:
+            unsupported.append(f"{rendering.target_id}: missing target profile")
+            continue
+        label = _target_label(target.platform, target.target_name, target.project)
+        if rendering.write_status == "review_only":
+            if label not in review_only:
+                review_only.append(label)
+            continue
+        if rendering.write_status == "unsupported":
+            if label not in unsupported:
+                unsupported.append(label)
+            continue
+        if config.evals.write.require_native_rendering and rendering.write_status != "native_ready":
+            continue
+        if rendering.render_confidence < config.evals.write.min_render_confidence:
+            if label not in review_only:
+                review_only.append(label)
+            continue
+        grouped.setdefault(rendering.target_id, []).append(rendering)
+    return grouped, review_only, unsupported
+
+
 def _post_results_comment(
-    outcome: ProbeWriteOutcome,
+    outcome: EvalWriteOutcome,
     *,
     pr_number: int,
     repo: str,
@@ -98,153 +108,132 @@ def _post_results_comment(
 ) -> None:
     if outcome.total_written <= 0 and not outcome.failures:
         return
-
     body = render_results_comment(
-        dataset_name=", ".join(outcome.written_targets or outcome.attempted_targets) or None,
+        targets=", ".join(outcome.written_targets or outcome.attempted_targets) or None,
         total_written=outcome.total_written,
-        failures=[
-            {
-                "probe_id": "n/a",
-                "probe_type": "n/a",
-                "failure": message,
-            }
-            for message in outcome.failures
-        ]
-        if outcome.failures
-        else None,
+        skipped_review_only=outcome.skipped_review_only,
+        unsupported_targets=outcome.unsupported_targets,
+        failures=outcome.failures or None,
         run_id=run_id,
     )
     post_pr_comment(pr_number, body, repo, token)
 
 
-def _group_probes(
-    proposal: ProbeProposal,
-    stage2_manifest: CoverageGapManifest | None,
-    config: ParityConfig,
-) -> tuple[dict[tuple[str, str | None, str | None], list[ProbeCase]], list[str]]:
-    grouped: dict[tuple[str, str | None, str | None], list[ProbeCase]] = defaultdict(list)
-    failures: list[str] = []
-    unresolved_gaps: set[tuple[str, str]] = set()
-    gap_lookup = {gap.gap_id: gap for gap in (stage2_manifest.gaps if stage2_manifest else [])}
-
-    for probe in _selected_probes(proposal):
-        gap = gap_lookup.get(probe.gap_id)
-        mapping = config.find_mapping(gap.artifact_path) if gap else None
-        if mapping is None:
-            if config.platforms.promptfoo:
-                grouped[("promptfoo", config.platforms.promptfoo.config_path, None)].append(probe)
-            else:
-                artifact_path = gap.artifact_path if gap else "unknown artifact"
-                unresolved_key = (probe.gap_id, artifact_path)
-                if unresolved_key not in unresolved_gaps:
-                    unresolved_gaps.add(unresolved_key)
-                    failures.append(f"No write target found for gap {probe.gap_id} ({artifact_path})")
-            continue
-        target = mapping.dataset
-        if mapping.platform == "promptfoo":
-            target = mapping.dataset or (config.platforms.promptfoo.config_path if config.platforms.promptfoo else None)
-        grouped[(mapping.platform, target, mapping.project)].append(probe)
-    return grouped, failures
-
-
-def write_probes_from_proposal(
-    proposal: ProbeProposal,
+def write_evals_from_proposal(
+    proposal: EvalProposalManifest,
     *,
     config: ParityConfig,
-    proposal_path: Path,
     repo_root: Path | None = None,
-) -> ProbeWriteOutcome:
+) -> EvalWriteOutcome:
     resolved_repo_root = (repo_root or Path.cwd()).resolve()
-    stage2_manifest = _load_optional_stage2(proposal_path)
-    grouped, failures = _group_probes(proposal, stage2_manifest, config)
-    attempted_targets = sorted({_target_label(platform, target, project) for platform, target, project in grouped})
+    target_lookup = {target.target_id: target for target in proposal.targets}
+    grouped, review_only, unsupported = _renderings_to_write(proposal, config=config)
+    attempted_targets = sorted(
+        {
+            _target_label(target_lookup[target_id].platform, target_lookup[target_id].target_name, target_lookup[target_id].project)
+            for target_id in grouped
+            if target_id in target_lookup
+        }
+    )
     written_targets: list[str] = []
+    failures: list[str] = []
     total_written = 0
 
-    for (platform, target, project), probes in grouped.items():
-        label = _target_label(platform, target, project)
+    for target_id, renderings in grouped.items():
+        target = target_lookup[target_id]
+        label = _target_label(target.platform, target.target_name, target.project)
         try:
-            if platform == "langsmith":
-                LangSmithWriter(api_key=os.environ.get("LANGSMITH_API_KEY")).create_examples(
-                    probes,
-                    dataset_name=target,
+            if target.platform == "langsmith":
+                LangSmithWriter(api_key=os.environ.get("LANGSMITH_API_KEY")).create_examples_from_renderings(
+                    renderings,
+                    dataset_name=target.target_name,
+                    dataset_id=target.dataset_id,
                     source_pr=proposal.pr_number,
                     source_commit=proposal.commit_sha,
                 )
-            elif platform == "braintrust":
+            elif target.platform == "braintrust":
                 BraintrustWriter(
                     api_key=os.environ.get("BRAINTRUST_API_KEY"),
                     org_name=config.platforms.braintrust.org if config.platforms.braintrust else None,
-                ).create_examples(probes, project=project or "", dataset_name=target or "")
-            elif platform == "arize_phoenix":
+                ).create_examples_from_renderings(
+                    renderings,
+                    project=target.project or "",
+                    dataset_name=target.target_name,
+                )
+            elif target.platform == "arize_phoenix":
                 PhoenixWriter(
                     base_url=config.platforms.arize_phoenix.base_url if config.platforms.arize_phoenix else None,
                     api_key=os.environ.get("PHOENIX_API_KEY"),
-                ).create_examples(probes, dataset_name=target or "")
-            elif platform == "promptfoo":
-                resolved_target = _resolve_promptfoo_target(
-                    target,
-                    config=config,
-                    repo_root=resolved_repo_root,
-                )
-                PromptfooWriter().write_tests(
-                    probes,
+                ).create_examples_from_renderings(renderings, dataset_name=target.target_name)
+            elif target.platform == "promptfoo":
+                resolved_target = _resolve_promptfoo_target(target.locator, config=config, repo_root=resolved_repo_root)
+                PromptfooWriter().write_renderings(
+                    renderings,
                     test_file=resolved_target,
+                    artifact_path=", ".join(target.artifact_paths) if target.artifact_paths else None,
                     pr_number=proposal.pr_number,
                     commit_sha=proposal.commit_sha,
                 )
-            total_written += len(probes)
+            else:
+                failures.append(f"{label}: unsupported platform `{target.platform}`")
+                continue
+            total_written += len(renderings)
             written_targets.append(label)
         except Exception as exc:
             failures.append(f"{label}: {exc}")
 
     if failures and total_written == 0:
-        return ProbeWriteOutcome(
+        return EvalWriteOutcome(
             exit_code=2,
             total_written=0,
             attempted_targets=attempted_targets,
             written_targets=[],
+            skipped_review_only=review_only,
+            unsupported_targets=unsupported,
             failures=failures,
         )
     if failures:
-        return ProbeWriteOutcome(
+        return EvalWriteOutcome(
             exit_code=1,
             total_written=total_written,
             attempted_targets=attempted_targets,
             written_targets=written_targets,
+            skipped_review_only=review_only,
+            unsupported_targets=unsupported,
             failures=failures,
         )
-    return ProbeWriteOutcome(
+    return EvalWriteOutcome(
         exit_code=0,
         total_written=total_written,
         attempted_targets=attempted_targets,
         written_targets=written_targets,
+        skipped_review_only=review_only,
+        unsupported_targets=unsupported,
         failures=[],
     )
 
 
-@click.command("write-probes", help="Write approved evals to your eval platform.")
+@click.command("write-evals", help="Write native-ready evals to the discovered eval targets.")
 @click.option("--proposal", "proposal_path", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--config", "config_path", default="parity.yaml", show_default=True, type=click.Path(dir_okay=False, path_type=Path))
 @click.option("--outcome-output", type=click.Path(dir_okay=False, path_type=Path))
 @click.option("--skip-comment", is_flag=True, help="Skip posting the merged-PR results comment from this process.")
-def write_probes_command(
+def write_evals_command(
     proposal_path: Path,
     config_path: Path,
     outcome_output: Path | None,
     skip_comment: bool,
 ) -> None:
     try:
-        proposal = ProbeProposal.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
+        proposal = EvalProposalManifest.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
         config = ParityConfig.load(config_path, allow_missing=True)
-        outcome = write_probes_from_proposal(
+        outcome = write_evals_from_proposal(
             proposal,
             config=config,
-            proposal_path=proposal_path,
             repo_root=Path.cwd().resolve(),
         )
     except Exception as exc:
-        outcome = ProbeWriteOutcome(exit_code=2, failures=[str(exc)])
+        outcome = EvalWriteOutcome(exit_code=2, failures=[str(exc)])
 
     if outcome_output is not None:
         _write_outcome(outcome_output, outcome)
@@ -307,7 +296,7 @@ def post_write_comment_command(
 
 
 def main() -> None:
-    write_probes_command()
+    write_evals_command()
 
 
 if __name__ == "__main__":

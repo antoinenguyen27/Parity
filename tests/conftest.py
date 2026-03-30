@@ -5,13 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from parity.models import BehaviorChangeManifest, CoverageGapManifest, ProbeProposal
+from parity.models import BehaviorChangeManifest, EvalAnalysisManifest, EvalProposalManifest
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def load_fixture(name: str) -> dict:
-    """Load a JSON fixture by filename from tests/fixtures/."""
     return json.loads((_FIXTURES / name).read_text(encoding="utf-8"))
 
 
@@ -21,10 +20,10 @@ def sample_manifest() -> BehaviorChangeManifest:
 
 
 @pytest.fixture()
-def sample_gaps() -> CoverageGapManifest:
-    return CoverageGapManifest.model_validate(load_fixture("sample_gaps.json"))
+def sample_analysis() -> EvalAnalysisManifest:
+    return EvalAnalysisManifest.model_validate(load_fixture("sample_analysis.json"))
 
 
 @pytest.fixture()
-def sample_proposal() -> ProbeProposal:
-    return ProbeProposal.model_validate(load_fixture("sample_proposal.json"))
+def sample_proposal() -> EvalProposalManifest:
+    return EvalProposalManifest.model_validate(load_fixture("sample_proposal.json"))

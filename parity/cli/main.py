@@ -13,13 +13,13 @@ from parity.cli.post_comment import post_comment_command
 from parity.cli.resolve_run_id import resolve_run_id_command
 from parity.cli.run_stage import run_stage_command
 from parity.cli.setup_mcp import setup_mcp_command
-from parity.cli.write_probes import post_write_comment_command, write_probes_command
+from parity.cli.write_evals import post_write_comment_command, write_evals_command
 
 
 @click.group()
 @click.version_option(version=__version__)
 def cli() -> None:
-    """Parity — automatically generate evals for every AI change."""
+    """Parity — discover, analyze, and synthesize native evals for every AI change."""
 
 
 cli.add_command(doctor_command)
@@ -32,7 +32,7 @@ cli.add_command(post_comment_command)
 cli.add_command(resolve_run_id_command)
 cli.add_command(run_stage_command)
 cli.add_command(setup_mcp_command)
-cli.add_command(write_probes_command)
+cli.add_command(write_evals_command)
 cli.add_command(post_write_comment_command)
 
 

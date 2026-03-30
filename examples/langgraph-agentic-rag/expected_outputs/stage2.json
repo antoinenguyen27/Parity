@@ -1,74 +1,206 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "3.0",
   "run_id": "stage2-demo",
   "stage1_run_id": "stage1-demo",
   "timestamp": "2026-03-14T05:01:00Z",
-  "unmapped_artifacts": [],
-  "coverage_summary": {
-    "total_relevant_cases": 5,
-    "cases_covering_changed_behavior": 0,
-    "coverage_ratio": 0.0,
-    "platform": "langsmith",
-    "dataset": "lilian-weng-rag-baseline",
-    "mode": "coverage_aware",
-    "corpus_status": "available",
-    "retrieval_notes": null,
-    "bootstrap_reason": null
-  },
+  "unresolved_artifacts": [],
+  "resolved_targets": [
+    {
+      "profile": {
+        "target_id": "langsmith::lilian-weng-rag-baseline",
+        "platform": "langsmith",
+        "locator": "lilian-weng-rag-baseline",
+        "target_name": "lilian-weng-rag-baseline",
+        "dataset_id": "demo-dataset-id",
+        "project": null,
+        "artifact_paths": [
+          "app/graph.py"
+        ],
+        "resolution_source": "config_rule",
+        "access_mode": "mcp",
+        "write_capability": "native_ready",
+        "profile_confidence": 0.88
+      },
+      "method_profile": {
+        "method_kind": "judge",
+        "input_shape": "string",
+        "assertion_style": "judge",
+        "uses_judge": true,
+        "supports_multi_assert": false,
+        "evaluator_binding": null,
+        "metadata_conventions": {
+          "common_keys": [
+            "assertion_type",
+            "rubric"
+          ]
+        },
+        "renderability_status": "native_ready",
+        "confidence": 0.84,
+        "notes": [
+          "Matched configured LangSmith target for app/graph.py."
+        ]
+      },
+      "samples": [],
+      "raw_field_patterns": [
+        "judge:llm_rubric"
+      ],
+      "aggregate_method_hints": [
+        "langsmith_dataset"
+      ],
+      "resolution_notes": [
+        "Configured LangSmith target aligned with the changed graph artifact."
+      ]
+    }
+  ],
+  "coverage_by_target": [
+    {
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
+      "total_relevant_cases": 5,
+      "cases_covering_changed_behavior": 0,
+      "coverage_ratio": 0.0,
+      "mode": "coverage_aware",
+      "corpus_status": "available",
+      "profile_status": "confirmed",
+      "retrieval_notes": "Configured LangSmith target aligned with the changed graph artifact.",
+      "bootstrap_reason": null,
+      "analysis_notes": [
+        "Existing baseline cases are factual retrieval checks and do not evaluate citation attribution."
+      ]
+    }
+  ],
   "gaps": [
     {
-      "gap_id": "gap_001",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:01",
       "artifact_path": "app/graph.py",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
       "gap_type": "uncovered",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "description": "No baseline case checks whether generated answers include a citation, or whether any citation present is accurate. All existing evaluators assert correctness of factual content but have no rubric for citation presence or attribution. Under the new GENERATE_PROMPT, the model will attempt to name source blog posts from raw chunk text — a behavior that is entirely untested.",
-      "nearest_existing_cases": [
+      "related_risk_flag": "Retrieved context is assembled from raw page_content only, so the model may fabricate or misattribute citations when chunks are ambiguous.",
+      "description": "Existing eval coverage does not adequately exercise citation attribution behavior within the discovered judge-style eval method.",
+      "why_gap_is_real": "The nearest baseline case checks factual retrieval only and has no rubric about citation presence or attribution accuracy.",
+      "existing_coverage_notes": "Current LangSmith cases validate answer correctness, not whether the answer grounds each claim in the right source post.",
+      "recommended_eval_area": "citation_presence_and_accuracy",
+      "recommended_eval_mode": "judge",
+      "native_shape_hints": [
+        "Preserve LangSmith-style dataset examples with a judge rubric in metadata.",
+        "Keep the input as a single user query, not a generic probe wrapper."
+      ],
+      "compatible_nearest_cases": [
         {
           "case_id": "lilian-reward-hacking-types",
+          "target_id": "langsmith::lilian-weng-rag-baseline",
           "input_normalized": "What does Lilian Weng say about types of reward hacking?",
           "similarity": 0.71,
-          "classification": "related"
+          "classification": "related",
+          "method_kind": "judge",
+          "native_shape_summary": "Single-turn LangSmith factual retrieval example with rubric metadata.",
+          "why_not_sufficient": "It checks factual correctness only and does not require source citation."
         }
       ],
+      "repo_asset_refs": [],
       "priority": "high",
+      "profile_status": "confirmed",
       "guardrail_direction": null,
-      "is_conversational": false
+      "is_conversational": false,
+      "confidence": 0.9
     },
     {
-      "gap_id": "gap_002",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:02",
       "artifact_path": "app/graph.py",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
       "gap_type": "boundary_shift",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "description": "No baseline case tests citation accuracy when retrieved chunks span multiple blog posts in a single response. The retriever may surface passages from the hallucination and reward-hacking posts together. Without source metadata, the model must attribute each claim to the correct post from text cues alone — a cross-post attribution scenario that has no existing coverage.",
-      "nearest_existing_cases": [
+      "related_risk_flag": "Cross-post attribution may fail when multiple blog posts are retrieved together.",
+      "description": "Existing eval coverage does not adequately exercise citation attribution behavior within the discovered judge-style eval method.",
+      "why_gap_is_real": "The nearest multi-topic case still expects one factual answer, not disambiguation across multiple possible source posts.",
+      "existing_coverage_notes": "The baseline has no case where the correct answer spans or contrasts multiple blog posts and therefore stresses attribution.",
+      "recommended_eval_area": "cross_post_attribution",
+      "recommended_eval_mode": "judge",
+      "native_shape_hints": [
+        "Use a question whose answer naturally touches multiple Lilian Weng posts.",
+        "Judge on correct attribution, not just topical relevance."
+      ],
+      "compatible_nearest_cases": [
         {
           "case_id": "lilian-diffusion-lumiere",
+          "target_id": "langsmith::lilian-weng-rag-baseline",
           "input_normalized": "How does Lumiere differ from cascade-based video generation approaches like Imagen Video?",
           "similarity": 0.63,
-          "classification": "related"
+          "classification": "related",
+          "method_kind": "judge",
+          "native_shape_summary": "Single-turn comparison question with judge-style grading.",
+          "why_not_sufficient": "It does not require the model to cite or separate multiple candidate sources."
         }
       ],
+      "repo_asset_refs": [],
       "priority": "high",
+      "profile_status": "confirmed",
       "guardrail_direction": null,
-      "is_conversational": false
+      "is_conversational": false,
+      "confidence": 0.87
     },
     {
-      "gap_id": "gap_003",
+      "gap_id": "langsmith::lilian-weng-rag-baseline::gap::001:03",
       "artifact_path": "app/graph.py",
+      "target_id": "langsmith::lilian-weng-rag-baseline",
+      "method_kind": "judge",
       "gap_type": "uncovered",
-      "related_risk_flag": "Retrieved context is assembled from raw page_content only — source metadata (URL, title) is not passed to the generator. The model must infer blog post identity from chunk text alone, and may fabricate or misattribute citations when chunks are ambiguous.",
-      "description": "No baseline case tests the model's behavior when chunk text does not contain enough internal signal to identify its source blog post. The model is instructed not to fabricate a citation, but no existing case verifies it actually refrains — or that it does not silently produce a vague placeholder such as 'the blog post' that satisfies the instruction syntactically but provides no useful attribution.",
-      "nearest_existing_cases": [
+      "related_risk_flag": "The model may fabricate a source label when the retrieved text does not make the originating post identifiable.",
+      "description": "Existing eval coverage does not check whether the model abstains from citing a source when attribution is ambiguous.",
+      "why_gap_is_real": "No baseline case asks the model to prefer uncertainty over a fabricated citation.",
+      "existing_coverage_notes": "Current cases reward answering, but none test citation restraint under ambiguity.",
+      "recommended_eval_area": "citation_restraint_under_ambiguity",
+      "recommended_eval_mode": "judge",
+      "native_shape_hints": [
+        "Judge for explicit restraint when the source cannot be identified confidently.",
+        "Do not convert this into an exact-match deterministic case."
+      ],
+      "compatible_nearest_cases": [
         {
           "case_id": "lilian-unsupported-moe",
-          "input_normalized": "What does Lilian Weng say about mixture-of-experts architectures?",
+          "target_id": "langsmith::lilian-weng-rag-baseline",
+          "input_normalized": "What does the blog say about Mixture-of-Experts architectures?",
           "similarity": 0.58,
-          "classification": "related"
+          "classification": "related",
+          "method_kind": "judge",
+          "native_shape_summary": "Unsupported-question case that expects graceful refusal.",
+          "why_not_sufficient": "It checks unsupported content, not ambiguous citation attribution inside otherwise answerable content."
         }
       ],
-      "priority": "medium",
+      "repo_asset_refs": [],
+      "priority": "high",
+      "profile_status": "confirmed",
       "guardrail_direction": null,
-      "is_conversational": false
+      "is_conversational": false,
+      "confidence": 0.85
     }
-  ]
+  ],
+  "runtime_metadata": {
+    "retrieval": {
+      "target_discovery_count": 0,
+      "repo_asset_discovery_count": 0,
+      "fetch_request_count": 1,
+      "total_cases": 5,
+      "sources": [
+        {
+          "platform": "langsmith",
+          "target": "lilian-weng-rag-baseline"
+        }
+      ]
+    },
+    "embedding": {
+      "request_count": 1,
+      "blocked_request_count": 0,
+      "input_count": 5,
+      "cached_count": 0,
+      "miss_count": 5,
+      "input_tokens": 410,
+      "estimated_cost_usd": 0.0001,
+      "cache_warning": false,
+      "models": [
+        "text-embedding-3-small"
+      ]
+    }
+  }
 }

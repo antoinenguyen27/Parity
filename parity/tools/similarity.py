@@ -5,8 +5,8 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from parity.models.manifests import CoverageGap
-from parity.models.probes import ProbeCase
+from parity.models.analysis import CoverageGap
+from parity.models.proposal import ProbeIntent
 
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
@@ -90,39 +90,41 @@ def classify_embeddings_against_corpus(
         )
     return payloads
 
-def score_probe(probe: ProbeCase, gaps: list[CoverageGap]) -> float:
+
+def score_intent(intent: ProbeIntent, gaps: list[CoverageGap]) -> float:
     weights = {
-        "specificity": 0.30,
-        "testability": 0.25,
-        "novelty": 0.20,
+        "specificity": 0.25,
+        "testability": 0.20,
+        "novelty": 0.15,
         "realism": 0.15,
         "risk_alignment": 0.10,
+        "target_fit": 0.15,
     }
-    novelty = 1.0 - (probe.nearest_existing_similarity or 0.0)
-    gap = next((candidate for candidate in gaps if candidate.gap_id == probe.gap_id), None)
+    gap = next((candidate for candidate in gaps if candidate.gap_id == intent.gap_id), None)
     risk_alignment = {"high": 1.0, "medium": 0.6, "low": 0.3}.get(
         gap.priority if gap else "medium",
         0.6,
     )
     return (
-        weights["specificity"] * probe.specificity_confidence
-        + weights["testability"] * probe.testability_confidence
-        + weights["novelty"] * novelty
-        + weights["realism"] * probe.realism_confidence
+        weights["specificity"] * intent.specificity_confidence
+        + weights["testability"] * intent.testability_confidence
+        + weights["novelty"] * intent.novelty_confidence
+        + weights["realism"] * intent.realism_confidence
         + weights["risk_alignment"] * risk_alignment
+        + weights["target_fit"] * intent.target_fit_confidence
     )
 
 
-def apply_diversity_limit(probes: list[ProbeCase], *, limit_per_gap: int) -> list[ProbeCase]:
+def apply_intent_diversity_limit(intents: list[ProbeIntent], *, limit_per_gap: int) -> list[ProbeIntent]:
     counts: dict[str, int] = defaultdict(int)
-    filtered: list[ProbeCase] = []
-    for probe in probes:
-        if counts[probe.gap_id] >= limit_per_gap:
+    filtered: list[ProbeIntent] = []
+    for intent in intents:
+        if counts[intent.gap_id] >= limit_per_gap:
             continue
-        filtered.append(probe)
-        counts[probe.gap_id] += 1
+        filtered.append(intent)
+        counts[intent.gap_id] += 1
     return filtered
 
 
-def rank_probes(probes: list[ProbeCase], gaps: list[CoverageGap]) -> list[ProbeCase]:
-    return sorted(probes, key=lambda probe: score_probe(probe, gaps), reverse=True)
+def rank_probe_intents(intents: list[ProbeIntent], gaps: list[CoverageGap]) -> list[ProbeIntent]:
+    return sorted(intents, key=lambda intent: score_intent(intent, gaps), reverse=True)

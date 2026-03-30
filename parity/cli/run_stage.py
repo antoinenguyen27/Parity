@@ -11,7 +11,11 @@ from parity.config import ParityConfig
 from parity.context import load_context_pack
 from parity.errors import BudgetExceededError, ConfigError, GitDiffError, SchemaValidationError, StageError
 from parity.export import write_run_artifacts
-from parity.models import BehaviorChangeManifest, CoverageGapManifest
+from parity.models import (
+    BehaviorChangeManifest,
+    EvalAnalysisManifest,
+    EvalProposalManifest,
+)
 from parity.stages._common import build_metadata
 from parity.stages.stage1 import run_stage1
 from parity.stages.stage2 import run_stage2
@@ -44,7 +48,7 @@ def _build_budget_failure_metadata(stage: int, exc: BudgetExceededError) -> dict
 @click.option("--pr-number", type=int)
 @click.option("--base-branch")
 @click.option("--manifest", "manifest_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--gaps", "gaps_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--analysis", "analysis_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--output", "output_path", required=True, type=click.Path(dir_okay=False, path_type=Path))
 @click.option("--config", "config_path", default="parity.yaml", show_default=True, type=click.Path(dir_okay=False, path_type=Path))
 def run_stage_command(
@@ -52,7 +56,7 @@ def run_stage_command(
     pr_number: int | None,
     base_branch: str | None,
     manifest_path: Path | None,
-    gaps_path: Path | None,
+    analysis_path: Path | None,
     output_path: Path,
     config_path: Path,
 ) -> None:
@@ -99,47 +103,40 @@ def run_stage_command(
                 raise SystemExit(5)
             manifest = _load_json(manifest_path)
             change_count = len(manifest.get("changes", []))
-            click.echo(
-                f"[parity] Stage 2 starting — {change_count} change(s) from Stage 1",
-                err=True,
-            )
+            click.echo(f"[parity] Stage 2 starting — {change_count} change(s) from Stage 1", err=True)
             result = run_stage2(manifest, config)
             metadata = build_metadata(2, result)
             cost = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
             click.echo(
                 f"[parity] Stage 2 complete — model={result.model} cost={cost} "
-                f"duration={result.duration_ms}ms turns={result.num_turns}",
+                f"duration={result.duration_ms}ms turns={result.num_turns} gaps={len(result.data.gaps)}",
                 err=True,
             )
         else:
-            if manifest_path is None or gaps_path is None:
+            if manifest_path is None or analysis_path is None:
                 raise SystemExit(5)
             manifest = _load_json(manifest_path)
-            gaps = _load_json(gaps_path)
-            gap_count = len(gaps.get("gaps", []))
-            click.echo(f"[parity] Stage 3 starting — {gap_count} coverage gap(s) from Stage 2", err=True)
-            result = run_stage3(manifest, gaps, context, config)
+            analysis = _load_json(analysis_path)
+            target_count = len(analysis.get("resolved_targets", []))
+            click.echo(f"[parity] Stage 3 starting — {target_count} resolved target(s) from Stage 2", err=True)
+            result = run_stage3(manifest, analysis, context, config)
             metadata = build_metadata(3, result)
             cost = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "n/a"
             click.echo(
                 f"[parity] Stage 3 complete — model={result.model} cost={cost} "
-                f"duration={result.duration_ms}ms turns={result.num_turns} "
-                f"probes={result.data.probe_count}",
+                f"duration={result.duration_ms}ms intents={result.data.intent_count}",
                 err=True,
             )
             commit_sha = manifest.get("commit_sha", "unknown")
             run_dir = output_path.parent / "runs" / commit_sha
             try:
-                artifact_paths = write_run_artifacts(
+                write_run_artifacts(
                     run_dir=run_dir,
                     stage1_manifest=BehaviorChangeManifest.model_validate(manifest),
-                    stage2_manifest=CoverageGapManifest.model_validate(gaps),
+                    stage2_manifest=EvalAnalysisManifest.model_validate(analysis),
                     proposal=result.data,
                     metadata=metadata,
                 )
-                result.data.export_formats.promptfoo = str(artifact_paths["test_file"])
-                result.data.export_formats.deepeval = str(artifact_paths["deepeval"])
-                result.data.export_formats.raw_json = str(artifact_paths["proposal"])
             except Exception as exc:
                 click.echo(f"[parity] warning: run artifact export failed: {exc}", err=True)
     except BudgetExceededError as exc:

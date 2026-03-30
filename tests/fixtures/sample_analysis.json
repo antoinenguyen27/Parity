@@ -1,0 +1,293 @@
+{
+  "schema_version": "3.0",
+  "run_id": "stage2-run",
+  "stage1_run_id": "stage1-run",
+  "timestamp": "2026-03-30T10:01:00Z",
+  "unresolved_artifacts": [],
+  "resolved_targets": [
+    {
+      "profile": {
+        "target_id": "promptfoo::evals/promptfooconfig.yaml",
+        "platform": "promptfoo",
+        "locator": "evals/promptfooconfig.yaml",
+        "target_name": "evals/promptfooconfig.yaml",
+        "dataset_id": null,
+        "project": null,
+        "artifact_paths": [
+          "prompts/citation_agent/system_prompt.md"
+        ],
+        "resolution_source": "config_rule",
+        "access_mode": "file",
+        "write_capability": "native_ready",
+        "profile_confidence": 0.92
+      },
+      "method_profile": {
+        "method_kind": "hybrid",
+        "input_shape": "conversation",
+        "assertion_style": "hybrid",
+        "uses_judge": true,
+        "supports_multi_assert": true,
+        "evaluator_binding": "promptfoo::llm-rubric",
+        "evaluator_scope": "row_local",
+        "execution_surface": "config_file",
+        "binding_candidates": [
+          {
+            "binding_id": "promptfoo::llm-rubric",
+            "label": "Promptfoo llm-rubric assertion",
+            "scope": "row_local",
+            "execution_surface": "config_file",
+            "source": "native_assertion",
+            "mapping_hints": {
+              "input": "messages"
+            },
+            "reusable": true,
+            "confidence": 0.88,
+            "notes": [
+              "Promptfoo judge behavior is encoded directly in the row-local assert block."
+            ]
+          }
+        ],
+        "supports_evaluator_reuse": true,
+        "metadata_conventions": {
+          "common_keys": [
+            "description",
+            "metadata"
+          ]
+        },
+        "renderability_status": "native_ready",
+        "confidence": 0.88,
+        "notes": [
+          "promptfoo_config"
+        ]
+      },
+      "samples": [
+        {
+          "case_id": "case_001",
+          "source_platform": "promptfoo",
+          "source_target_id": "promptfoo::evals/promptfooconfig.yaml",
+          "source_target_name": "promptfooconfig",
+          "target_locator": "evals/promptfooconfig.yaml",
+          "project": null,
+          "method_kind": "hybrid",
+          "native_case": {
+            "id": "case_001",
+            "description": "Citation behavior",
+            "vars": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "What year was the Paris Agreement signed?"
+                }
+              ]
+            },
+            "assert": [
+              {
+                "type": "contains",
+                "value": "2015"
+              },
+              {
+                "type": "llm-rubric",
+                "value": "The answer cites a source."
+              }
+            ]
+          },
+          "native_input": [
+            {
+              "role": "user",
+              "content": "What year was the Paris Agreement signed?"
+            }
+          ],
+          "native_output": {
+            "assert": [
+              {
+                "type": "contains",
+                "value": "2015"
+              },
+              {
+                "type": "llm-rubric",
+                "value": "The answer cites a source."
+              }
+            ]
+          },
+          "normalized_projection": {
+            "input_text": "USER: What year was the Paris Agreement signed?",
+            "expected_text": "{\"assert\": [{\"type\": \"contains\", \"value\": \"2015\"}, {\"type\": \"llm-rubric\", \"value\": \"The answer cites a source.\"}]}",
+            "comparison_text": "USER: What year was the Paris Agreement signed?\n\n{\"assert\": [{\"type\": \"contains\", \"value\": \"2015\"}, {\"type\": \"llm-rubric\", \"value\": \"The answer cites a source.\"}]}",
+            "is_conversational": true
+          },
+          "native_assertions": [
+            {
+              "assertion_id": "case_001:0",
+              "assertion_kind": "deterministic",
+              "operator": "contains",
+              "expected_value": "2015",
+              "rubric": null,
+              "evaluator_name": null,
+              "pass_threshold": null,
+              "metadata": {
+                "raw_assertion": {
+                  "type": "contains",
+                  "value": "2015"
+                }
+              }
+            },
+            {
+              "assertion_id": "case_001:1",
+              "assertion_kind": "judge",
+              "operator": "llm-rubric",
+              "expected_value": null,
+              "rubric": "The answer cites a source.",
+              "evaluator_name": null,
+              "pass_threshold": null,
+              "metadata": {
+                "raw_assertion": {
+                  "type": "llm-rubric",
+                  "value": "The answer cites a source."
+                }
+              }
+            }
+          ],
+          "method_hints": [
+            "promptfoo_config"
+          ],
+          "method_confidence": 0.8,
+          "metadata": {
+            "description": "Citation behavior",
+            "metadata": {}
+          },
+          "tags": [],
+          "embedding": null,
+          "embedding_model": null
+        }
+      ],
+      "evaluator_dossiers": [
+        {
+          "dossier_id": "promptfoo::evals/promptfooconfig.yaml::evaluator::01",
+          "target_id": "promptfoo::evals/promptfooconfig.yaml",
+          "binding_id": "promptfoo::llm-rubric",
+          "label": "Promptfoo llm-rubric assertion",
+          "scope": "row_local",
+          "execution_surface": "config_file",
+          "source": "native_assertion",
+          "explicitness": "explicit",
+          "mapping_hints": {
+            "input": "messages"
+          },
+          "supporting_case_ids": [
+            "case_001"
+          ],
+          "supporting_repo_asset_paths": [],
+          "reuse_feasibility": "confirmed",
+          "confidence": 0.88,
+          "rationale": "Recovered from sampled native assertions on the resolved target.",
+          "risks": [],
+          "notes": [
+            "Promptfoo judge behavior is encoded directly in the row-local assert block."
+          ]
+        }
+      ],
+      "raw_field_patterns": [
+        "assert,description,id,vars",
+        "deterministic:contains",
+        "judge:llm-rubric"
+      ],
+      "aggregate_method_hints": [
+        "promptfoo_config"
+      ],
+      "resolution_notes": [
+        "Configured promptfoo target matched the changed artifact."
+      ]
+    }
+  ],
+  "coverage_by_target": [
+    {
+      "target_id": "promptfoo::evals/promptfooconfig.yaml",
+      "method_kind": "hybrid",
+      "total_relevant_cases": 1,
+      "cases_covering_changed_behavior": 0,
+      "coverage_ratio": 0.0,
+      "mode": "coverage_aware",
+      "corpus_status": "available",
+      "profile_status": "confirmed",
+      "retrieval_notes": "Configured promptfoo target matched the changed artifact.",
+      "bootstrap_reason": null,
+      "analysis_notes": []
+    }
+  ],
+  "gaps": [
+    {
+      "gap_id": "promptfoo::evals/promptfooconfig.yaml::gap::001:01",
+      "artifact_path": "prompts/citation_agent/system_prompt.md",
+      "target_id": "promptfoo::evals/promptfooconfig.yaml",
+      "method_kind": "hybrid",
+      "gap_type": "uncovered",
+      "related_risk_flag": "Conversational questions may receive citations unexpectedly",
+      "description": "Existing eval coverage does not adequately exercise this changed behavior within the hybrid eval method.",
+      "why_gap_is_real": "The nearest compatible case is factual and does not test the casual conversational boundary introduced by the prompt change.",
+      "existing_coverage_notes": "Current promptfoo coverage exercises factual citation behavior but not conversational non-citation behavior.",
+      "recommended_eval_area": "conversation_boundary",
+      "recommended_eval_mode": "hybrid",
+      "evaluator_dossier_ids": [
+        "promptfoo::evals/promptfooconfig.yaml::evaluator::01"
+      ],
+      "native_shape_hints": [
+        "Use promptfoo vars.messages for conversational probes.",
+        "Preserve the hybrid contains + llm-rubric assertion pattern."
+      ],
+      "compatible_nearest_cases": [
+        {
+          "case_id": "case_001",
+          "target_id": "promptfoo::evals/promptfooconfig.yaml",
+          "input_normalized": "USER: What year was the Paris Agreement signed?",
+          "similarity": 0.41,
+          "classification": "novel",
+          "method_kind": "hybrid",
+          "native_shape_summary": "promptfoo hybrid case with vars.messages and mixed assertions",
+          "why_not_sufficient": "Tests factual citation behavior, not conversational restraint."
+        }
+      ],
+      "repo_asset_refs": [
+        {
+          "path": "evals/promptfooconfig.yaml",
+          "kind": "promptfoo_config",
+          "summary": "Promptfoo config using vars and mixed contains/llm-rubric assertions.",
+          "keys": [
+            "description",
+            "tests"
+          ],
+          "relevance": "Native destination for this gap."
+        }
+      ],
+      "priority": "high",
+      "profile_status": "confirmed",
+      "guardrail_direction": null,
+      "is_conversational": true,
+      "confidence": 0.86
+    }
+  ],
+  "runtime_metadata": {
+    "retrieval": {
+      "target_discovery_count": 1,
+      "repo_asset_discovery_count": 1,
+      "fetch_request_count": 1,
+      "total_cases": 1,
+      "sources": [
+        {
+          "platform": "promptfoo",
+          "target": "evals/promptfooconfig.yaml"
+        }
+      ]
+    },
+    "embedding": {
+      "request_count": 0,
+      "blocked_request_count": 0,
+      "input_count": 0,
+      "cached_count": 0,
+      "miss_count": 0,
+      "input_tokens": 0,
+      "estimated_cost_usd": 0.0,
+      "cache_warning": false,
+      "models": []
+    }
+  }
+}

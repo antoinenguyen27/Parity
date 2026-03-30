@@ -1,10 +1,6 @@
-version: 1
+version: 2
 
-# ── Artifact Hint Patterns ─────────────────────────────────────
-# Hint patterns guide Parity's artifact discovery — they are not filters.
-# The Stage 1 agent always sees all changed files and can inspect any of them.
-# Files matching these patterns are pre-loaded with before/after content for efficiency.
-
+# Hint patterns guide Stage 1 artifact discovery. They are not hard filters.
 behavior_artifacts:
   paths:
     - "prompts/**"
@@ -20,9 +16,6 @@ behavior_artifacts:
     - "*.test.yaml"
     - "docs/**"
 
-# Guardrail artifacts: LLM judges, output classifiers, validators, rubrics, safety filters.
-# Changes to these files alter how your agent evaluates or constrains its own outputs —
-# often as significant as prompt changes but more rarely tested.
 guardrail_artifacts:
   paths:
     - "judges/**"
@@ -45,76 +38,101 @@ context:
   traces_dir: "context/traces/"
   trace_max_samples: 20
 
-# ── Platform Configuration ─────────────────────────────────────
-# Configure the eval platform(s) you use. Only include platforms
-# where you want Parity to read coverage and write probes.
 platforms:
   langsmith:
     api_key_env: LANGSMITH_API_KEY
 
-  # Uncomment to add Braintrust:
   # braintrust:
   #   api_key_env: BRAINTRUST_API_KEY
   #   org: "my-org"
 
-  # Uncomment to add Arize Phoenix:
   # arize_phoenix:
   #   api_key_env: PHOENIX_API_KEY
   #   base_url: "https://app.phoenix.arize.com"
 
-  # Uncomment to add Promptfoo (file-based):
   # promptfoo:
   #   config_path: "promptfooconfig.yaml"
 
-mappings:
-  - artifact: "prompts/citation_agent/system_prompt.md"
-    platform: langsmith
-    dataset: "citation-agent-evals"
-  - artifact: "agents/planner/**"
-    platform: langsmith
-    dataset: "planner-regression"
-  - artifact: "judges/citation_quality_rubric.md"
-    platform: langsmith
-    dataset: "citation-judge-calibration"
-    eval_type: "judge_calibration"
+evals:
+  discovery:
+    repo_asset_globs:
+      - "promptfooconfig.yaml"
+      - "**/promptfooconfig.yaml"
+      - "**/*promptfoo*.yaml"
+      - "**/eval*.yaml"
+      - "**/*eval*.py"
+      - "**/*judge*.py"
+      - "**/*scorer*.py"
+    platform_discovery_order:
+      - langsmith
+      - promptfoo
+    sample_limit_per_target: 20
+    allow_repo_asset_discovery: true
+
+  rules:
+    - artifact: "prompts/citation_agent/system_prompt.md"
+      preferred_platform: langsmith
+      preferred_target: "citation-agent-evals"
+      allowed_methods:
+        - judge
+        - hybrid
+      preferred_methods:
+        - hybrid
+    - artifact: "agents/planner/**"
+      preferred_platform: langsmith
+      preferred_target: "planner-regression"
+      allowed_methods:
+        - deterministic
+        - judge
+    - artifact: "judges/citation_quality_rubric.md"
+      preferred_platform: promptfoo
+      preferred_target: "evals/promptfooconfig.yaml"
+      allowed_methods:
+        - judge
+        - hybrid
+      repo_asset_hints:
+        - "evals/promptfooconfig.yaml"
+
+  write:
+    require_native_rendering: true
+    min_render_confidence: 0.70
+    create_missing_targets: false
+    allow_review_only_exports: true
+
+  evaluators:
+    # Controls how strictly Parity confirms the target's existing evaluator regime
+    # before reusing it. This does not enable evaluator creation or rebinding.
+    formal_discovery_required: false
+    allow_inference_fallback: true
+    require_binding_verification: false
+    min_binding_confidence: 0.85
 
 embedding:
   model: "text-embedding-3-small"
   cache_path: ".parity/embedding_cache.db"
-  # dimensions: 1536  # optional; use only if configuring a custom embedding backend
 
 similarity:
   duplicate_threshold: 0.88
   boundary_threshold: 0.72
 
 generation:
-  proposal_probe_limit: 8
-  candidate_probe_pool_limit: 20
+  proposal_limit: 8
+  candidate_intent_pool_limit: 20
   diversity_limit_per_gap: 2
 
 approval:
   label: "parity:approve"
 
-# ── Auto-Run (planned, not yet active in v1) ───────────────────
-# Auto-run will trigger a scoped eval run after probe writeback and
-# post results back to the merged PR. Not yet implemented.
-# auto_run:
-#   enabled: true
-#   fail_on: "regression_guard"
-#   notify: "pr_comment"
+auto_run:
+  enabled: true
+  fail_on: "regression_guard"
+  notify: "pr_comment"
 
-# ── Spend Caps ────────────────────────────────────────────────
-# Optional total run spend cap. If omitted, Parity falls back to an internal default.
-# This governs the full analysis budget Parity allocates across:
-# - Stage 1 agent spend
-# - Stage 2 agent spend
-# - Stage 2 embedding spend
-# - Stage 3 agent spend
 spend:
-  analysis_total_spend_cap_usd: 2.25
+  analysis_total_spend_cap_usd: 2.50
 
   # Advanced overrides. Set all four together only if you want manual control.
-  # stage1_agent_cap_usd: 0.7875
+  # stage1_agent_cap_usd: 0.75
   # stage2_agent_cap_usd: 0.45
-  # stage2_embedding_cap_usd: 0.3375
-  # stage3_agent_cap_usd: 0.675
+  # stage2_embedding_cap_usd: 0.30
+  # stage3_agent_cap_usd: 1.00

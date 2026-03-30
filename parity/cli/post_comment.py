@@ -8,7 +8,11 @@ import click
 
 from parity.errors import GithubApiError
 from parity.github import find_existing_comment, post_pr_comment, render_pr_comment, update_pr_comment
-from parity.models import BehaviorChangeManifest, CoverageGapManifest, ProbeProposal
+from parity.models import (
+    BehaviorChangeManifest,
+    EvalAnalysisManifest,
+    EvalProposalManifest,
+)
 
 NO_CHANGES_COMMENT = """<!-- parity-comment -->
 ## Parity: No Behavioral Changes Detected
@@ -56,7 +60,7 @@ def post_comment_command(
         raise SystemExit(2)
 
     try:
-        proposal = ProbeProposal.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
+        proposal = EvalProposalManifest.model_validate(json.loads(proposal_path.read_text(encoding="utf-8")))
     except Exception as exc:
         click.echo(f"Invalid proposal JSON: {exc}", err=True)
         raise SystemExit(2) from exc
@@ -68,8 +72,8 @@ def post_comment_command(
     )
     stage2_manifest = _load_optional_manifest(
         proposal_path.parent,
-        ["stage2.json", "CoverageGapManifest.json"],
-        CoverageGapManifest,
+        ["stage2.json", "EvalAnalysisManifest.json"],
+        EvalAnalysisManifest,
     )
 
     body = render_pr_comment(

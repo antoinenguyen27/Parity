@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from parity.cli.write_probes import main
+from parity.cli.write_evals import main
 
 
 if __name__ == "__main__":

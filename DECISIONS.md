@@ -1,5 +1,52 @@
 # Decisions
 
+Historical entries capture the design state at the time they were made. Older entries may reference superseded command names or earlier prelaunch pipeline shapes.
+
+## 2026-03-30
+
+### Question
+Should Stage 2 and Stage 3 be merged, or kept separate with a richer handoff?
+
+### Options considered
+1. Merge eval analysis and synthesis into one large agent stage to preserve latent understanding.
+2. Keep them separate, but make Stage 2 the full eval-analysis stage and give Stage 3 direct access to Stage 2 evidence instead of summary-only handoffs.
+
+### Choice
+Keep Stage 2 and Stage 3 separate, with a shared evidence plane.
+
+### Reasoning
+The work is meaningfully different: Stage 2 is investigative and Stage 3 is constructive. Separation keeps context tighter, reruns cheaper, and debugging cleaner. The old problem was not the existence of a boundary; it was that the boundary was lossy. The implemented design fixes that by having Stage 2 emit target-scoped evidence and by giving Stage 3 dedicated evidence tools into Stage 2 dossiers, samples, and repo assets.
+
+---
+
+### Question
+How should Parity model evaluator handling?
+
+### Options considered
+1. Treat evaluator discovery, evaluator mutation, and row synthesis as one expanding capability surface.
+2. Keep evaluator discovery first-class, but limit the product contract to discovery-and-reuse only.
+
+### Choice
+Discovery-and-reuse only.
+
+### Reasoning
+Parity's core product value is adding compatible eval coverage to the user's existing system. Discovering the active evaluator regime is necessary for that. Mutating hosted evaluator infrastructure is a different and riskier product surface: it changes measurement semantics rather than just adding coverage. For prelaunch Parity, the cleaner contract is to discover the regime, reuse it when safely confirmed, and fall back to `manual` when reuse cannot be established.
+
+---
+
+### Question
+Should evaluator discovery remain heuristic or become formal-first?
+
+### Options considered
+1. Continue inferring evaluator regime mainly from sample rows and metadata.
+2. Prefer formal evaluator discovery when a platform or repo harness exposes it, with inference only as fallback.
+
+### Choice
+Formal-first, inference fallback.
+
+### Reasoning
+The more formal the recovery path, the better Parity can match the user's actual eval conventions. Promptfoo is naturally row-local and formal. Other platforms vary, but the runtime should still prefer explicit bindings and formal surfaces where available. Inference remains important because some systems express evaluator behavior indirectly or through repo-local harness code, but it should no longer be treated as the primary truth when better evidence exists.
+
 ## 2026-03-16
 
 ### Question

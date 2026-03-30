@@ -7,9 +7,9 @@ from pydantic import ValidationError
 
 from parity.models import (
     BehaviorChangeManifest,
-    CoverageGapManifest,
     EvalCase,
-    ProbeProposal,
+    EvalAnalysisManifest,
+    EvalProposalManifest,
     RawChangeData,
 )
 
@@ -48,48 +48,38 @@ def test_raw_change_data_validates_and_computes_counts() -> None:
     )
 
     assert model.has_changes is True
-    assert model.artifact_count == 2  # counts all_changed_files
+    assert model.artifact_count == 2
 
 
-def test_raw_change_data_rejects_invalid_change_kind() -> None:
-    with pytest.raises(ValidationError):
-        RawChangeData.model_validate(
-            {
-                "pr_number": 1,
-                "pr_title": "Title",
-                "pr_body": "",
-                "base_branch": "main",
-                "head_sha": "abc",
-                "repo_full_name": "org/repo",
-                "all_changed_files": [
-                    {"path": "prompts/x.md", "change_kind": "edited"},
-                ],
-                "hint_matched_artifacts": [],
-                "unchanged_hint_matches": [],
-                "has_changes": True,
-                "artifact_count": 1,
-            }
-        )
-
-
-def test_eval_case_normalizes_conversation_input() -> None:
+def test_eval_case_snapshot_populates_normalized_projection() -> None:
     case = EvalCase.model_validate(
         {
-            "id": "case_1",
+            "case_id": "case_1",
             "source_platform": "promptfoo",
-            "source_dataset_id": "dataset",
-            "source_dataset_name": "dataset",
-            "input_raw": [
+            "source_target_id": "promptfoo::demo",
+            "source_target_name": "demo",
+            "target_locator": "evals/promptfooconfig.yaml",
+            "method_kind": "judge",
+            "native_input": [
                 {"role": "user", "content": "Hello"},
                 {"role": "assistant", "content": "Hi"},
             ],
-            "expected_output": {"answer": "Hi"},
+            "native_output": {"answer": "Hi"},
+            "native_assertions": [
+                {
+                    "assertion_id": "case_1:judge",
+                    "assertion_kind": "judge",
+                    "operator": "llm-rubric",
+                    "rubric": "The answer greets the user.",
+                }
+            ],
+            "method_confidence": 0.8,
         }
     )
 
-    assert case.is_conversational is True
-    assert case.input_normalized == "USER: Hello\nASSISTANT: Hi"
-    assert case.expected_output == "Hi"
+    assert case.normalized_projection.is_conversational is True
+    assert case.normalized_projection.input_text == "USER: Hello\nASSISTANT: Hi"
+    assert case.normalized_projection.expected_text == "Hi"
 
 
 def test_behavior_change_manifest_rejects_true_without_changes() -> None:
@@ -111,37 +101,39 @@ def test_behavior_change_manifest_rejects_true_without_changes() -> None:
         )
 
 
-def test_coverage_gap_manifest_validates_similarity_bounds() -> None:
+def test_coverage_analysis_manifest_validates_similarity_bounds() -> None:
     with pytest.raises(ValidationError):
-        CoverageGapManifest.model_validate(
+        EvalAnalysisManifest.model_validate(
             {
                 "run_id": "run",
                 "stage1_run_id": "stage1",
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-                "unmapped_artifacts": [],
-                "coverage_summary": {
-                    "total_relevant_cases": 1,
-                    "cases_covering_changed_behavior": 1,
-                    "coverage_ratio": 0.5,
-                    "platform": "langsmith",
-                    "dataset": "dataset",
-                },
+                "coverage_by_target": [
+                    {
+                        "target_id": "target",
+                        "method_kind": "deterministic",
+                        "coverage_ratio": 0.5,
+                    }
+                ],
                 "gaps": [
                     {
                         "gap_id": "gap_1",
                         "artifact_path": "prompts/citation.md",
+                        "target_id": "target",
+                        "method_kind": "deterministic",
                         "gap_type": "uncovered",
                         "related_risk_flag": "flag",
                         "description": "desc",
                         "priority": "high",
-                        "guardrail_direction": None,
-                        "is_conversational": False,
-                        "nearest_existing_cases": [
+                        "profile_status": "confirmed",
+                        "compatible_nearest_cases": [
                             {
                                 "case_id": "case_1",
+                                "target_id": "target",
                                 "input_normalized": "question",
                                 "similarity": 1.5,
                                 "classification": "related",
+                                "method_kind": "deterministic",
                             }
                         ],
                     }
@@ -150,112 +142,262 @@ def test_coverage_gap_manifest_validates_similarity_bounds() -> None:
         )
 
 
-def test_coverage_summary_requires_reason_in_bootstrap_mode() -> None:
+def test_coverage_target_summary_requires_reason_in_bootstrap_mode() -> None:
     with pytest.raises(ValidationError):
-        CoverageGapManifest.model_validate(
+        EvalAnalysisManifest.model_validate(
             {
                 "run_id": "run",
                 "stage1_run_id": "stage1",
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-                "unmapped_artifacts": [],
-                "coverage_summary": {
-                    "total_relevant_cases": 0,
-                    "cases_covering_changed_behavior": 0,
-                    "coverage_ratio": 0.0,
-                    "mode": "bootstrap",
-                    "corpus_status": "empty",
-                },
+                "coverage_by_target": [
+                    {
+                        "target_id": "target",
+                        "method_kind": "unknown",
+                        "coverage_ratio": 0.0,
+                        "mode": "bootstrap",
+                        "corpus_status": "empty",
+                    }
+                ],
                 "gaps": [],
             }
         )
 
 
-def test_coverage_summary_accepts_bootstrap_mode_with_reason() -> None:
-    manifest = CoverageGapManifest.model_validate(
-        {
-            "run_id": "run",
-            "stage1_run_id": "stage1",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "unmapped_artifacts": [],
-            "coverage_summary": {
-                "total_relevant_cases": 0,
-                "cases_covering_changed_behavior": 0,
-                "coverage_ratio": 0.0,
-                "mode": "bootstrap",
-                "corpus_status": "empty",
-                "bootstrap_reason": "No existing eval cases were found for the mapped artifact.",
-            },
-            "gaps": [],
-        }
-    )
+def test_eval_analysis_manifest_rejects_duplicate_target_ids() -> None:
+    with pytest.raises(ValidationError):
+        EvalAnalysisManifest.model_validate(
+            {
+                "run_id": "stage2",
+                "stage1_run_id": "stage1",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "resolved_targets": [
+                    {
+                        "profile": {
+                            "target_id": "same",
+                            "platform": "promptfoo",
+                            "locator": "a.yaml",
+                            "target_name": "a.yaml",
+                            "artifact_paths": ["prompts/a.md"],
+                            "resolution_source": "config_rule",
+                            "access_mode": "file",
+                            "write_capability": "native_ready",
+                            "profile_confidence": 0.8,
+                        },
+                        "method_profile": {
+                            "method_kind": "deterministic",
+                            "input_shape": "string",
+                            "assertion_style": "deterministic",
+                            "uses_judge": False,
+                            "supports_multi_assert": False,
+                            "renderability_status": "native_ready",
+                            "confidence": 0.8,
+                        },
+                        "samples": [],
+                    },
+                    {
+                        "profile": {
+                            "target_id": "same",
+                            "platform": "promptfoo",
+                            "locator": "b.yaml",
+                            "target_name": "b.yaml",
+                            "artifact_paths": ["prompts/b.md"],
+                            "resolution_source": "config_rule",
+                            "access_mode": "file",
+                            "write_capability": "native_ready",
+                            "profile_confidence": 0.7,
+                        },
+                        "method_profile": {
+                            "method_kind": "deterministic",
+                            "input_shape": "string",
+                            "assertion_style": "deterministic",
+                            "uses_judge": False,
+                            "supports_multi_assert": False,
+                            "renderability_status": "native_ready",
+                            "confidence": 0.7,
+                        },
+                        "samples": [],
+                    }
+                ]
+            }
+        )
 
-    assert manifest.coverage_summary is not None
-    assert manifest.coverage_summary.mode == "bootstrap"
+
+def test_eval_proposal_manifest_rejects_missing_target_reference() -> None:
+    with pytest.raises(ValidationError):
+        EvalProposalManifest.model_validate(
+            {
+                "run_id": "stage3",
+                "stage1_run_id": "stage1",
+                "stage2_run_id": "stage2",
+                "stage3_run_id": "stage3",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "pr_number": 1,
+                "commit_sha": "abc",
+                "intent_count": 1,
+                "targets": [],
+                "intents": [
+                    {
+                        "intent_id": "intent_1",
+                        "gap_id": "gap_1",
+                        "target_id": "missing",
+                        "method_kind": "deterministic",
+                        "intent_type": "edge_case",
+                        "title": "Title",
+                        "is_conversational": False,
+                        "input": "Hello",
+                        "input_format": "string",
+                        "behavior_under_test": "Behavior",
+                        "pass_criteria": "Pass",
+                        "failure_mode": "Fail",
+                        "probe_rationale": "Why",
+                        "related_risk_flag": "flag",
+                        "specificity_confidence": 0.9,
+                        "testability_confidence": 0.8,
+                        "novelty_confidence": 0.7,
+                        "realism_confidence": 0.7,
+                        "target_fit_confidence": 0.9
+                    }
+                ],
+                "renderings": [],
+                "render_artifacts": [],
+                "warnings": []
+            }
+        )
 
 
-def test_coverage_summary_accepts_coverage_aware_with_retrieval_notes() -> None:
-    manifest = CoverageGapManifest.model_validate(
-        {
-            "run_id": "run",
-            "stage1_run_id": "stage1",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "unmapped_artifacts": [],
-            "coverage_summary": {
-                "total_relevant_cases": 5,
-                "cases_covering_changed_behavior": 0,
-                "coverage_ratio": 0.0,
-                "platform": "langsmith",
-                "dataset": "dataset",
-                "mode": "coverage_aware",
-                "corpus_status": "available",
-                "retrieval_notes": "Retrieved 5 cases via file-based fallback after MCP lookup was unavailable.",
-            },
-            "gaps": [],
-        }
-    )
+def test_eval_method_profile_requires_execution_surface_for_row_local() -> None:
+    with pytest.raises(ValidationError):
+        EvalAnalysisManifest.model_validate(
+            {
+                "run_id": "stage2",
+                "stage1_run_id": "stage1",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "resolved_targets": [
+                    {
+                        "profile": {
+                            "target_id": "promptfoo::demo",
+                            "platform": "promptfoo",
+                            "locator": "promptfooconfig.yaml",
+                            "target_name": "promptfooconfig.yaml",
+                            "artifact_paths": ["prompts/demo.md"],
+                            "resolution_source": "config_rule",
+                            "access_mode": "file",
+                            "write_capability": "native_ready",
+                            "profile_confidence": 0.8,
+                        },
+                        "method_profile": {
+                            "method_kind": "hybrid",
+                            "input_shape": "conversation",
+                            "assertion_style": "hybrid",
+                            "uses_judge": True,
+                            "supports_multi_assert": True,
+                            "evaluator_scope": "row_local",
+                            "execution_surface": "unknown",
+                            "renderability_status": "native_ready",
+                            "confidence": 0.8,
+                        },
+                        "samples": [],
+                    }
+                ],
+            }
+        )
 
-    assert manifest.coverage_summary is not None
-    assert manifest.coverage_summary.mode == "coverage_aware"
-    assert manifest.coverage_summary.retrieval_notes is not None
+
+def test_eval_proposal_manifest_rejects_evaluator_plan_missing_intent() -> None:
+    with pytest.raises(ValidationError):
+        EvalProposalManifest.model_validate(
+            {
+                "run_id": "stage3",
+                "stage1_run_id": "stage1",
+                "stage2_run_id": "stage2",
+                "stage3_run_id": "stage3",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "pr_number": 1,
+                "commit_sha": "abc",
+                "intent_count": 0,
+                "targets": [
+                    {
+                        "target_id": "promptfoo::demo",
+                        "platform": "promptfoo",
+                        "locator": "promptfooconfig.yaml",
+                        "target_name": "promptfooconfig.yaml",
+                        "artifact_paths": ["prompts/demo.md"],
+                        "resolution_source": "config_rule",
+                        "access_mode": "file",
+                        "write_capability": "native_ready",
+                        "profile_confidence": 0.8,
+                    }
+                ],
+                "intents": [],
+                "evaluator_plans": [
+                    {
+                        "plan_id": "plan-1",
+                        "intent_id": "missing",
+                        "target_id": "promptfoo::demo",
+                        "action": "row_local",
+                        "scope": "row_local",
+                        "execution_surface": "config_file",
+                        "confidence": 0.9,
+                        "requires_opt_in": False,
+                        "rationale": "Promptfoo is row-local.",
+                    }
+                ],
+                "renderings": [],
+                "render_artifacts": [],
+                "warnings": [],
+            }
+        )
 
 
-def test_probe_proposal_recomputes_probe_count() -> None:
-    proposal = ProbeProposal.model_validate(
-        {
-            "run_id": "run",
-            "stage1_run_id": "stage1",
-            "stage2_run_id": "stage2",
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-            "pr_number": 1,
-            "commit_sha": "abc",
-            "probe_count": 999,
-            "probes": [
-                {
-                    "probe_id": "probe_1",
-                    "gap_id": "gap_1",
-                    "probe_type": "boundary_probe",
-                    "is_conversational": False,
-                    "input": "Hello",
-                    "input_format": "string",
-                    "expected_behavior": "Expected",
-                    "expected_behavior_type": "llm_rubric",
-                    "rubric": "Rubric",
-                    "probe_rationale": "Why",
-                    "related_risk_flag": "flag",
-                    "nearest_existing_case_id": "case_1",
-                    "nearest_existing_similarity": 0.74,
-                    "specificity_confidence": 0.9,
-                    "testability_confidence": 0.8,
-                    "realism_confidence": 0.7,
-                    "approved": False,
-                }
-            ],
-            "export_formats": {
-                "promptfoo": "probes.yaml",
-                "deepeval": None,
-                "raw_json": "probes.json",
-            },
-        }
-    )
-
-    assert proposal.probe_count == 1
+def test_eval_analysis_manifest_rejects_gap_missing_evaluator_dossier_reference() -> None:
+    with pytest.raises(ValidationError):
+        EvalAnalysisManifest.model_validate(
+            {
+                "run_id": "stage2",
+                "stage1_run_id": "stage1",
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "resolved_targets": [
+                    {
+                        "profile": {
+                            "target_id": "promptfoo::demo",
+                            "platform": "promptfoo",
+                            "locator": "promptfooconfig.yaml",
+                            "target_name": "promptfooconfig.yaml",
+                            "artifact_paths": ["prompts/demo.md"],
+                            "resolution_source": "config_rule",
+                            "access_mode": "file",
+                            "write_capability": "native_ready",
+                            "profile_confidence": 0.8,
+                        },
+                        "method_profile": {
+                            "method_kind": "hybrid",
+                            "input_shape": "conversation",
+                            "assertion_style": "hybrid",
+                            "uses_judge": True,
+                            "supports_multi_assert": True,
+                            "evaluator_scope": "row_local",
+                            "execution_surface": "config_file",
+                            "renderability_status": "native_ready",
+                            "confidence": 0.8,
+                        },
+                        "samples": [],
+                        "evaluator_dossiers": [],
+                    }
+                ],
+                "coverage_by_target": [],
+                "gaps": [
+                    {
+                        "gap_id": "gap-1",
+                        "artifact_path": "prompts/demo.md",
+                        "target_id": "promptfoo::demo",
+                        "method_kind": "hybrid",
+                        "gap_type": "uncovered",
+                        "related_risk_flag": "flag",
+                        "description": "desc",
+                        "evaluator_dossier_ids": ["missing-dossier"],
+                        "priority": "medium",
+                        "confidence": 0.5,
+                    }
+                ],
+            }
+        )

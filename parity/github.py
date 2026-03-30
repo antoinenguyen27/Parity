@@ -1,75 +1,98 @@
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
 import httpx
 
 from parity.errors import GithubApiError
-from parity.models import BehaviorChangeManifest, CoverageGapManifest, ProbeProposal
+from parity.models import (
+    BehaviorChangeManifest,
+    EvalAnalysisManifest,
+    EvalProposalManifest,
+    ProbeIntent,
+)
 from parity.models.eval_case import ConversationMessage
-from parity.models.probes import ProbeCase
 
 PARITY_COMMENT_MARKER = "<!-- parity-comment -->"
 PARITY_RESULTS_MARKER = "<!-- parity-results -->"
 GITHUB_API_VERSION = "2022-11-28"
 
 
-def _format_probe_input_for_display(probe: "ProbeCase") -> str:  # type: ignore
-    """Format full probe input for display in details section."""
-    if probe.input_format == "conversation" and probe.input:
-        import json
-
-        messages = [
-            item.model_dump() if isinstance(item, ConversationMessage) else item for item in probe.input
-        ]
+def _format_intent_input_for_display(intent: ProbeIntent) -> str:
+    if intent.input_format == "conversation" and intent.input:
+        messages = [item.model_dump() if isinstance(item, ConversationMessage) else item for item in intent.input]
         return json.dumps(messages, indent=2, ensure_ascii=False)
-    else:
-        return str(probe.input) if probe.input else "(empty)"
+    return str(intent.input) if intent.input else "(empty)"
 
 
-def _format_probe_details(probe: "ProbeCase", index: int) -> str:  # type: ignore
-    """Format a single probe's full details for collapsible section."""
+def _format_intent_details(intent: ProbeIntent, index: int, write_status: str, abstention_reason: str | None) -> str:
+    return _format_intent_details_with_evaluator(intent, index, write_status, abstention_reason, None)
+
+
+def _format_intent_details_with_evaluator(
+    intent: ProbeIntent,
+    index: int,
+    write_status: str,
+    abstention_reason: str | None,
+    evaluator_plan,
+) -> str:
     lines = [
-        f"<details>",
-        f"<summary><strong>Eval #{index} — {probe.probe_type}</strong></summary>",
+        "<details>",
+        f"<summary><strong>Eval #{index} — {intent.intent_type}</strong></summary>",
         "",
-        f"**Eval ID:** `{probe.probe_id}`  ",
-        f"**Gap ID:** `{probe.gap_id}`  ",
-        f"**Risk flag:** {probe.related_risk_flag}",
+        f"**Intent ID:** `{intent.intent_id}`  ",
+        f"**Gap ID:** `{intent.gap_id}`  ",
+        f"**Target:** `{intent.target_id}`  ",
+        f"**Method:** `{intent.method_kind}`  ",
+        f"**Write status:** `{write_status}`  ",
+        f"**Risk flag:** {intent.related_risk_flag}",
         "",
         "**Full Input:**",
         "```json",
-        _format_probe_input_for_display(probe),
+        _format_intent_input_for_display(intent),
         "```",
         "",
-        f"**Expected Behavior:** {probe.expected_behavior}  ",
-        f"**Behavior Type:** `{probe.expected_behavior_type}`",
+        f"**Behavior under test:** {intent.behavior_under_test}  ",
+        f"**Pass criteria:** {intent.pass_criteria}  ",
+        f"**Failure mode:** {intent.failure_mode}",
     ]
-
-    if probe.rubric:
-        lines.extend(["", f"**Rubric:** {probe.rubric}"])
-
-    lines.extend(
-        [
-            "",
-            "**Rationale:** " + probe.probe_rationale,
-            "",
-            "**Confidence Scores:**  ",
-            f"- Specificity: {probe.specificity_confidence:.2f}  ",
-            f"- Testability: {probe.testability_confidence:.2f}  ",
-            f"- Realism: {probe.realism_confidence:.2f}",
-        ]
-    )
-
-    if probe.nearest_existing_case_id and probe.nearest_existing_similarity is not None:
+    if evaluator_plan is not None:
         lines.extend(
             [
                 "",
-                f"**Nearest similar case:** `{probe.nearest_existing_case_id}` ({probe.nearest_existing_similarity:.2f} similarity)",
+                f"**Evaluator linkage:** `{evaluator_plan.action}`  ",
+                f"**Evaluator scope:** `{evaluator_plan.scope}`  ",
+                f"**Execution surface:** `{evaluator_plan.execution_surface}`",
             ]
         )
-
+        if evaluator_plan.binding_ref:
+            lines.append(f"**Evaluator binding:** `{evaluator_plan.binding_ref}`")
+    if abstention_reason:
+        lines.extend(["", f"**Abstention reason:** {abstention_reason}"])
+    if evaluator_plan is not None:
+        lines.extend(["", f"**Evaluator rationale:** {evaluator_plan.rationale}"])
+    lines.extend(
+        [
+            "",
+            "**Rationale:** " + intent.probe_rationale,
+            "",
+            "**Confidence Scores:**  ",
+            f"- Specificity: {intent.specificity_confidence:.2f}  ",
+            f"- Testability: {intent.testability_confidence:.2f}  ",
+            f"- Novelty: {intent.novelty_confidence:.2f}  ",
+            f"- Realism: {intent.realism_confidence:.2f}  ",
+            f"- Target fit: {intent.target_fit_confidence:.2f}",
+        ]
+    )
+    if intent.nearest_existing_case_id and intent.nearest_existing_similarity is not None:
+        lines.extend(
+            [
+                "",
+                f"**Nearest compatible case:** `{intent.nearest_existing_case_id}` ({intent.nearest_existing_similarity:.2f} similarity)",
+            ]
+        )
     lines.extend(["", "</details>"])
     return "\n".join(lines)
 
@@ -217,17 +240,20 @@ def find_latest_workflow_run_id(
 
 
 def render_pr_comment(
-    proposal: ProbeProposal,
+    proposal: EvalProposalManifest,
     *,
     stage1_manifest: BehaviorChangeManifest | None = None,
-    stage2_manifest: CoverageGapManifest | None = None,
+    stage2_manifest: EvalAnalysisManifest | None = None,
     updated_for_commit: str | None = None,
 ) -> str:
-    coverage_summary = stage2_manifest.coverage_summary if stage2_manifest is not None else None
+    target_lookup = {target.target_id: target for target in proposal.targets}
+    rendering_lookup = {rendering.intent_id: rendering for rendering in proposal.renderings}
+    evaluator_plan_lookup = {plan.intent_id: plan for plan in proposal.evaluator_plans}
     lines = [PARITY_COMMENT_MARKER]
     if updated_for_commit:
         lines.extend([f"> ⟳ Updated for commit `{updated_for_commit}`", ""])
-    lines.extend(["## Parity: Evals Proposed", ""])
+    lines.extend(["## Parity: Native Evals Proposed", ""])
+
     if stage1_manifest is not None and stage1_manifest.changes:
         change = stage1_manifest.changes[0]
         lines.extend(
@@ -236,101 +262,85 @@ def render_pr_comment(
                 f"**Risk level:** {stage1_manifest.overall_risk.title()}  ",
                 f"**Primary change:** {change.inferred_intent}",
                 "",
-                "### What Changed",
             ]
         )
-        lines.extend([f"- {flag}" for flag in change.unintended_risk_flags] or ["- No explicit risk flags surfaced."])
-        lines.append("")
 
-    # Warnings appear before Analysis Mode for visibility
-    if stage2_manifest is not None and stage2_manifest.unmapped_artifacts:
+    if stage2_manifest is not None and stage2_manifest.unresolved_artifacts:
         lines.extend(
             [
                 "### Warnings",
                 *[
-                    f"> ⚠️ **Setup issue:** No eval dataset mapped for `{artifact}` — coverage analysis skipped for this artifact."
-                    for artifact in stage2_manifest.unmapped_artifacts
+                    f"> ⚠️ No usable native eval target was discovered for `{artifact}`. Those items are proposal-only bootstrap candidates."
+                    for artifact in stage2_manifest.unresolved_artifacts
                 ],
                 "",
             ]
         )
-    elif coverage_summary is not None and coverage_summary.mode == "bootstrap":
-        lines.extend(
-            [
-                "### Warnings",
-                "> ⚠️ **Starter mode** — No eval corpus found. Evals are grounded in your diff and product context. Add eval dataset mappings to unlock coverage-aware analysis.",
-                "",
-            ]
-        )
 
-    if coverage_summary is not None:
-        lines.extend(["### Coverage Mode"])
-        if coverage_summary.mode == "bootstrap":
-            reason = coverage_summary.bootstrap_reason or "No existing eval corpus was available."
-            extra_note = ""
-            if stage2_manifest is not None and stage2_manifest.unmapped_artifacts:
-                extra_note = (
-                    "\n- If you have `platforms:` configured in `parity.yaml`, verify that the corresponding"
-                    " API key secret is set in your repository's GitHub Actions secrets."
-                )
-            lines.extend(
-                [
-                    f"- Starter mode: {reason}",
-                    f"- Evals below are grounded in the diff and your product context. Add eval dataset mappings to unlock coverage-aware analysis.{extra_note}",
-                    "",
-                ]
+    if stage2_manifest is not None:
+        lines.extend(["### Resolved Targets", ""])
+        for resolved_target in stage2_manifest.resolved_targets[:8]:
+            profile = resolved_target.profile
+            method = resolved_target.method_profile
+            lines.append(
+                f"- `{profile.target_id}` → `{profile.platform}` / `{profile.target_name}` "
+                f"({method.method_kind}, {method.renderability_status}, evaluator={method.evaluator_scope}, samples={len(resolved_target.samples)})"
             )
-        else:
-            dataset_bits = [bit for bit in [coverage_summary.platform, coverage_summary.dataset] if bit]
-            dataset_label = ":".join(dataset_bits) if dataset_bits else "configured coverage sources"
-            lines.extend(
-                [
-                    f"- Coverage-aware mode using `{dataset_label}`",
-                    f"- Relevant cases: {coverage_summary.total_relevant_cases}; behavior-covering cases: {coverage_summary.cases_covering_changed_behavior}; coverage ratio: {coverage_summary.coverage_ratio:.2f}",
-                    "",
-                ]
+        lines.append("")
+        lines.extend(["### Coverage Summary", ""])
+        for summary in stage2_manifest.coverage_by_target[:8]:
+            lines.append(
+                f"- `{summary.target_id}`: mode={summary.mode}, method={summary.method_kind}, "
+                f"coverage={summary.coverage_ratio:.2f}, profile={summary.profile_status}"
             )
-    lines.extend(
-        [
-            f"### Proposed Evals ({proposal.probe_count})",
-            "",
-            "| # | Type | Input (truncated) | Tests |",
-            "|---|---|---|---|",
-        ]
-    )
-    for index, probe in enumerate(proposal.probes, start=1):
-        if probe.input_format == "conversation" and probe.input:
-            last_message = probe.input[-1]
-            raw_input = (
-                last_message.content
-                if isinstance(last_message, ConversationMessage)
-                else last_message.get("content", "")
-            )
-        else:
-            raw_input = probe.input if probe.input_format != "conversation" else ""
-        preview = str(raw_input).replace("\n", " ")
-        preview = f"{preview[:57]}..." if len(preview) > 60 else preview
-        lines.append(
-            f"| {index} | `{probe.probe_type}` | `{preview}` | {probe.expected_behavior} |"
-        )
-
-    lines.extend(
-        [
-            "",
-            "> 💡 **Expand each eval below to review its rationale, confidence scores, and full input.**",
-            "",
-        ]
-    )
-
-    for index, probe in enumerate(proposal.probes, start=1):
-        lines.append(_format_probe_details(probe, index))
         lines.append("")
 
     lines.extend(
         [
-            "**To approve:** Add label `parity:approve` to this PR **before merging**.  ",
-            f"**Full proposal + rationale:** `{proposal.export_formats.raw_json or '.parity/ProbeProposal.json'}`  ",
-            f"**Promptfoo export:** `{proposal.export_formats.promptfoo or '.parity/probes.yaml'}`",
+            f"### Proposed Evals ({proposal.intent_count})",
+            "",
+            "| # | Target | Method | Write | Evaluator | Behavior |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for index, intent in enumerate(proposal.intents, start=1):
+        rendering = rendering_lookup.get(intent.intent_id)
+        evaluator_plan = evaluator_plan_lookup.get(intent.intent_id)
+        target = target_lookup.get(intent.target_id)
+        target_label = target.target_name if target is not None else intent.target_id
+        behavior = intent.behavior_under_test.replace("\n", " ")
+        if len(behavior) > 80:
+            behavior = f"{behavior[:77]}..."
+        lines.append(
+            f"| {index} | `{target_label}` | `{intent.method_kind}` | "
+            f"`{rendering.write_status if rendering else 'unsupported'}` | "
+            f"`{evaluator_plan.action if evaluator_plan is not None else 'manual'}` | {behavior} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "> Expand each eval below to review the target fit, pass criteria, and any abstention reason.",
+            "",
+        ]
+    )
+    for index, intent in enumerate(proposal.intents, start=1):
+        rendering = rendering_lookup.get(intent.intent_id)
+        lines.append(
+            _format_intent_details_with_evaluator(
+                intent,
+                index,
+                rendering.write_status if rendering is not None else "unsupported",
+                rendering.abstention_reason if rendering is not None else "No rendering was generated.",
+                evaluator_plan_lookup.get(intent.intent_id),
+            )
+        )
+        lines.append("")
+
+    lines.extend(
+        [
+            "**To approve:** Add label `parity:approve` to this PR before merging.  ",
+            "**Full proposal:** `.parity/EvalProposalManifest.json`",
         ]
     )
     return "\n".join(lines)
@@ -338,34 +348,33 @@ def render_pr_comment(
 
 def render_results_comment(
     *,
-    dataset_name: str | None,
+    targets: str | None,
     total_written: int,
-    passed: int | None = None,
-    failed: int | None = None,
-    failures: list[dict[str, str]] | None = None,
+    skipped_review_only: list[str] | None = None,
+    unsupported_targets: list[str] | None = None,
+    failures: list[str] | None = None,
     run_id: str | None = None,
 ) -> str:
     repo = os.environ.get("GITHUB_REPOSITORY")
-    lines = [
-        PARITY_RESULTS_MARKER,
-        "## Parity: Evals Written",
-        "",
-    ]
+    lines = [PARITY_RESULTS_MARKER, "## Parity: Evals Written", ""]
     if total_written > 0:
-        lines.append(f"**{total_written} evals written to:** `{dataset_name or 'configured datasets'}`")
+        lines.append(f"**{total_written} evals written to:** `{targets or 'discovered targets'}`")
     else:
         lines.append("**No evals were written.**")
-        if dataset_name:
-            lines.append(f"**Targets attempted:** `{dataset_name}`")
-        if failures and run_id and repo:
-            lines.append(
-                f"\n**Eval files available:** [View in Actions artifacts](https://github.com/{repo}/actions/runs/{run_id})"
-            )
-    if passed is not None and failed is not None:
-        lines.append(f"**Auto-run completed:** {passed} passed, {failed} failed")
+        if targets:
+            lines.append(f"**Targets attempted:** `{targets}`")
+    if skipped_review_only:
+        lines.extend(["", f"**Skipped review-only targets:** {', '.join(skipped_review_only)}"])
+    if unsupported_targets:
+        lines.extend(["", f"**Unsupported targets:** {', '.join(unsupported_targets)}"])
     if failures:
-        lines.extend(["", "### Failures", "", "| Eval | Type | Failure |", "|---|---|---|"])
+        lines.extend(["", "### Failures", ""])
+        lines.extend([f"- {failure}" for failure in failures])
+    if failures and run_id and repo:
         lines.extend(
-            [f"| {item['probe_id']} | `{item['probe_type']}` | {item['failure']} |" for item in failures]
+            [
+                "",
+                f"**Run artifacts:** [View in Actions artifacts](https://github.com/{repo}/actions/runs/{run_id})",
+            ]
         )
     return "\n".join(lines)

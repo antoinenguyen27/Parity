@@ -4,7 +4,6 @@ import asyncio
 import os
 import sys
 import time
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,12 +13,19 @@ from claude_agent_sdk import ClaudeAgentOptions
 from parity.config import ParityConfig
 from parity.context import count_tokens
 from parity.errors import BudgetExceededError
-from parity.models import CoverageGap, CoverageGapManifest, CoverageSummary
+from parity.models import (
+    CoverageGap,
+    CoverageTargetSummary,
+    EvalAnalysisManifest,
+    EvalMethodProfile,
+    EvalTargetProfile,
+    ResolvedEvalTarget,
+)
 from parity.prompts.stage2_template import render_stage2_prompt
-from parity.stages.stage2_mcp import build_stage2_mcp_server
 from parity.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
+from parity.stages.stage2_mcp import build_stage2_mcp_server
 
-_STAGE2_INJECT_KEYS = {"run_id", "stage1_run_id", "timestamp", "schema_version"}
+_STAGE2_INJECT_KEYS = {"run_id", "stage1_run_id", "timestamp", "schema_version", "runtime_metadata"}
 
 
 def _dedupe_non_empty(values: list[Any]) -> list[str]:
@@ -28,63 +34,50 @@ def _dedupe_non_empty(values: list[Any]) -> list[str]:
         if not isinstance(value, str):
             continue
         normalized = value.strip()
-        if not normalized or normalized in deduped:
-            continue
-        deduped.append(normalized)
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
     return deduped
 
 
-def _build_stage2_mapping_resolutions(
-    stage1_manifest: dict,
-    config: ParityConfig,
-) -> list[dict[str, Any]]:
+def _build_stage2_rule_resolutions(stage1_manifest: dict, config: ParityConfig) -> list[dict[str, Any]]:
     resolutions: list[dict[str, Any]] = []
     seen_artifacts: set[str] = set()
-
     for change in stage1_manifest.get("changes", []):
         artifact_path = change.get("artifact_path")
         if not isinstance(artifact_path, str) or not artifact_path or artifact_path in seen_artifacts:
             continue
         seen_artifacts.add(artifact_path)
-
-        mapping = config.find_mapping(artifact_path)
-        resolution: dict[str, Any] = {
-            "artifact_path": artifact_path,
-            "artifact_class": change.get("artifact_class"),
-        }
-        if mapping is None:
-            resolution.update(
+        rule = config.find_eval_rule(artifact_path)
+        if rule is None:
+            resolutions.append(
                 {
-                    "mapping_status": "unresolved",
-                    "resolution_source": "none",
-                    "platform": None,
-                    "target": None,
-                    "project": None,
-                    "eval_type": None,
-                    "access_mode": None,
+                    "artifact_path": artifact_path,
+                    "artifact_class": change.get("artifact_class"),
+                    "rule_status": "unresolved",
+                    "preferred_platform": None,
+                    "preferred_target": None,
+                    "preferred_project": None,
+                    "allowed_methods": [],
+                    "preferred_methods": [],
+                    "repo_asset_hints": [],
+                    "discovery_order": config.resolve_platform_discovery_order(),
                 }
             )
-        else:
-            target = mapping.dataset
-            access_mode = "mcp"
-            if mapping.platform == "promptfoo":
-                target = mapping.dataset or (
-                    config.platforms.promptfoo.config_path if config.platforms.promptfoo else None
-                )
-                access_mode = "file"
-            resolution.update(
-                {
-                    "mapping_status": "explicit",
-                    "resolution_source": "parity_yaml",
-                    "platform": mapping.platform,
-                    "target": target,
-                    "project": mapping.project,
-                    "eval_type": mapping.eval_type,
-                    "access_mode": access_mode,
-                }
-            )
-        resolutions.append(resolution)
-
+            continue
+        resolutions.append(
+            {
+                "artifact_path": artifact_path,
+                "artifact_class": change.get("artifact_class"),
+                "rule_status": "explicit",
+                "preferred_platform": rule.preferred_platform,
+                "preferred_target": rule.preferred_target,
+                "preferred_project": rule.preferred_project,
+                "allowed_methods": rule.allowed_methods,
+                "preferred_methods": rule.preferred_methods,
+                "repo_asset_hints": rule.repo_asset_hints,
+                "discovery_order": config.resolve_platform_discovery_order(rule.preferred_platform),
+            }
+        )
     return resolutions
 
 
@@ -94,7 +87,6 @@ def _build_stage2_bootstrap_brief(stage1_manifest: dict) -> dict[str, Any]:
         artifact_path = change.get("artifact_path")
         if not isinstance(artifact_path, str) or not artifact_path:
             continue
-
         risk_flags = _dedupe_non_empty(
             [
                 *change.get("unintended_risk_flags", []),
@@ -102,16 +94,33 @@ def _build_stage2_bootstrap_brief(stage1_manifest: dict) -> dict[str, Any]:
                 *change.get("false_positive_risks", []),
             ]
         )
+        changed_entities = [
+            entity.model_dump(mode="json") if hasattr(entity, "model_dump") else entity
+            for entity in change.get("changed_entities", [])
+        ]
+        evidence_snippets = [
+            snippet.model_dump(mode="json") if hasattr(snippet, "model_dump") else snippet
+            for snippet in change.get("evidence_snippets", [])
+        ]
+        observable_delta = change.get("observable_delta")
+        if hasattr(observable_delta, "model_dump"):
+            observable_delta = observable_delta.model_dump(mode="json")
         change_briefs.append(
             {
                 "artifact_path": artifact_path,
                 "artifact_class": change.get("artifact_class"),
                 "inferred_intent": change.get("inferred_intent"),
+                "change_summary": change.get("change_summary"),
                 "affected_components": change.get("affected_components", []),
                 "risk_flags": risk_flags,
+                "behavioral_signatures": change.get("behavioral_signatures", []),
+                "changed_entities": changed_entities,
+                "observable_delta": observable_delta,
+                "eval_search_hints": change.get("eval_search_hints", []),
+                "validation_focus": change.get("validation_focus", []),
+                "evidence_snippets": evidence_snippets,
             }
         )
-
     return {
         "overall_risk": stage1_manifest.get("overall_risk"),
         "compound_change_detected": bool(stage1_manifest.get("compound_change_detected")),
@@ -119,23 +128,102 @@ def _build_stage2_bootstrap_brief(stage1_manifest: dict) -> dict[str, Any]:
     }
 
 
-def _normalize_stage2_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    coverage_summary = payload.get("coverage_summary")
-    if not isinstance(coverage_summary, dict):
-        return payload
+def _build_bootstrap_target(change: dict[str, Any], reason: str) -> ResolvedEvalTarget:
+    artifact_path = change.get("artifact_path", "unknown")
+    target_id = f"bootstrap::{artifact_path}"
+    profile = EvalTargetProfile(
+        target_id=target_id,
+        platform="bootstrap",
+        locator=artifact_path,
+        target_name=f"Bootstrap target for {artifact_path}",
+        artifact_paths=[artifact_path],
+        resolution_source="bootstrap",
+        access_mode="synthetic",
+        write_capability="review_only",
+        profile_confidence=0.0,
+    )
+    method_profile = EvalMethodProfile(
+        method_kind="unknown",
+        input_shape="unknown",
+        assertion_style="unknown",
+        renderability_status="review_only",
+        confidence=0.0,
+        notes=[reason],
+    )
+    return ResolvedEvalTarget(
+        profile=profile,
+        method_profile=method_profile,
+        samples=[],
+        raw_field_patterns=[],
+        aggregate_method_hints=[],
+        resolution_notes=[reason],
+    )
 
-    if coverage_summary.get("mode") == "coverage_aware" and coverage_summary.get("bootstrap_reason"):
-        coverage_summary.setdefault("retrieval_notes", coverage_summary["bootstrap_reason"])
-        coverage_summary.pop("bootstrap_reason", None)
-    return payload
+
+def _coerce_partial_stage2_targets(partial_payload: dict[str, Any] | None) -> list[ResolvedEvalTarget]:
+    if not isinstance(partial_payload, dict):
+        return []
+    raw_targets = partial_payload.get("resolved_targets")
+    if not isinstance(raw_targets, list):
+        return []
+    valid: list[ResolvedEvalTarget] = []
+    seen: set[str] = set()
+    for raw_target in raw_targets:
+        if not isinstance(raw_target, dict):
+            continue
+        try:
+            target = ResolvedEvalTarget.model_validate(raw_target)
+        except Exception:
+            continue
+        if target.profile.target_id in seen:
+            continue
+        seen.add(target.profile.target_id)
+        valid.append(target)
+    return valid
 
 
-def _build_stage2_unmapped_artifacts(mapping_resolutions: list[dict[str, Any]]) -> list[str]:
-    return [
-        resolution["artifact_path"]
-        for resolution in mapping_resolutions
-        if resolution.get("mapping_status") == "unresolved" and isinstance(resolution.get("artifact_path"), str)
-    ]
+def _coerce_partial_stage2_gaps(partial_payload: dict[str, Any] | None) -> list[CoverageGap]:
+    if not isinstance(partial_payload, dict):
+        return []
+    raw_gaps = partial_payload.get("gaps")
+    if not isinstance(raw_gaps, list):
+        return []
+    valid_gaps: list[CoverageGap] = []
+    seen_gap_ids: set[str] = set()
+    for raw_gap in raw_gaps:
+        if not isinstance(raw_gap, dict):
+            continue
+        try:
+            gap = CoverageGap.model_validate(raw_gap)
+        except Exception:
+            continue
+        if gap.gap_id in seen_gap_ids:
+            continue
+        seen_gap_ids.add(gap.gap_id)
+        valid_gaps.append(gap)
+    return valid_gaps
+
+
+def _coerce_partial_stage2_coverage(partial_payload: dict[str, Any] | None) -> list[CoverageTargetSummary]:
+    if not isinstance(partial_payload, dict):
+        return []
+    raw_items = partial_payload.get("coverage_by_target")
+    if not isinstance(raw_items, list):
+        return []
+    valid: list[CoverageTargetSummary] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        try:
+            summary = CoverageTargetSummary.model_validate(raw_item)
+        except Exception:
+            continue
+        if summary.target_id in seen:
+            continue
+        seen.add(summary.target_id)
+        valid.append(summary)
+    return valid
 
 
 def _infer_guardrail_direction(change: dict[str, Any], risk_flag: str) -> str | None:
@@ -146,13 +234,14 @@ def _infer_guardrail_direction(change: dict[str, Any], risk_flag: str) -> str | 
     return None
 
 
-def _build_stage2_fallback_gaps(stage1_manifest: dict) -> list[dict[str, Any]]:
-    gaps: list[dict[str, Any]] = []
+def _build_stage2_fallback_gaps(stage1_manifest: dict, reason: str) -> list[CoverageGap]:
+    gaps: list[CoverageGap] = []
     overall_risk = stage1_manifest.get("overall_risk") or "medium"
     for change_index, change in enumerate(stage1_manifest.get("changes", []), start=1):
         artifact_path = change.get("artifact_path")
         if not isinstance(artifact_path, str) or not artifact_path:
             continue
+        target_id = f"bootstrap::{artifact_path}"
         risk_flags = _dedupe_non_empty(
             [
                 *change.get("unintended_risk_flags", []),
@@ -165,144 +254,154 @@ def _build_stage2_fallback_gaps(stage1_manifest: dict) -> list[dict[str, Any]]:
             risk_flags = [str(fallback_flag)]
         for risk_index, risk_flag in enumerate(risk_flags, start=1):
             gaps.append(
-                {
-                    "gap_id": f"gap_bootstrap_{change_index:03d}_{risk_index:02d}",
-                    "artifact_path": artifact_path,
-                    "gap_type": "uncovered",
-                    "related_risk_flag": risk_flag,
-                    "description": (
-                        "Coverage analysis was degraded before full corpus comparison completed. "
-                        "Treat this as a bootstrap proposal target for the predicted risk."
-                    ),
-                    "nearest_existing_cases": [],
-                    "priority": overall_risk,
-                    "guardrail_direction": _infer_guardrail_direction(change, risk_flag),
-                    "is_conversational": False,
-                }
+                CoverageGap(
+                    gap_id=f"{target_id}::gap::{change_index:03d}:{risk_index:02d}",
+                    artifact_path=artifact_path,
+                    target_id=target_id,
+                    method_kind="unknown",
+                    gap_type="uncovered",
+                    related_risk_flag=risk_flag,
+                    description="Bootstrap this behavior as a new eval area because analysis did not complete.",
+                    why_gap_is_real=reason,
+                    existing_coverage_notes="No validated native corpus comparison was completed before the fallback.",
+                    recommended_eval_area=change.get("artifact_class") or "behavior_regression",
+                    recommended_eval_mode="unknown",
+                    native_shape_hints=list(change.get("validation_focus", [])),
+                    compatible_nearest_cases=[],
+                    repo_asset_refs=[],
+                    priority=overall_risk,
+                    profile_status="bootstrap",
+                    guardrail_direction=_infer_guardrail_direction(change, risk_flag),
+                    is_conversational=False,
+                    confidence=0.0,
+                )
             )
     return gaps
 
 
-def _build_stage2_fallback_coverage_summary(
-    *,
-    mapping_resolutions: list[dict[str, Any]],
-    runtime_metadata: dict[str, Any],
+def _build_stage2_fallback_coverage(
+    stage1_manifest: dict,
+    resolved_targets: list[ResolvedEvalTarget],
     reason: str,
-) -> dict[str, Any]:
-    retrieval = runtime_metadata.get("retrieval", {})
-    embedding = runtime_metadata.get("embedding", {})
-    sources = retrieval.get("sources", []) if isinstance(retrieval, dict) else []
-    total_cases = int(retrieval.get("total_cases", 0) or 0) if isinstance(retrieval, dict) else 0
-    blocked_requests = int(embedding.get("blocked_request_count", 0) or 0) if isinstance(embedding, dict) else 0
-    source_platform = None
-    source_target = None
-    if len(sources) == 1 and isinstance(sources[0], dict):
-        source_platform = sources[0].get("platform")
-        source_target = sources[0].get("target")
-
-    if total_cases > 0:
-        notes: list[str] = [reason]
-        if sources:
-            source_preview = ", ".join(
-                f"{source.get('platform')}:{source.get('target')}" for source in sources[:3] if isinstance(source, dict)
+) -> list[CoverageTargetSummary]:
+    summaries: list[CoverageTargetSummary] = []
+    for target in resolved_targets:
+        sample_count = len(target.samples)
+        summaries.append(
+            CoverageTargetSummary(
+                target_id=target.profile.target_id,
+                method_kind=target.method_profile.method_kind,
+                total_relevant_cases=sample_count,
+                cases_covering_changed_behavior=0,
+                coverage_ratio=0.0,
+                mode="bootstrap" if sample_count == 0 or target.profile.platform == "bootstrap" else "coverage_aware",
+                corpus_status="empty" if sample_count == 0 else "available",
+                profile_status="bootstrap" if sample_count == 0 or target.profile.platform == "bootstrap" else "uncertain",
+                retrieval_notes=reason if sample_count > 0 else None,
+                bootstrap_reason=reason if sample_count == 0 or target.profile.platform == "bootstrap" else None,
+                analysis_notes=[],
             )
-            if source_preview:
-                if len(sources) > 3:
-                    source_preview = f"{source_preview}, ..."
-                notes.append(f"Retrieved {total_cases} eval case(s) from {source_preview}.")
-        if blocked_requests:
-            notes.append(f"Embedding spend cap blocked {blocked_requests} embedding request(s).")
-        return {
-            "total_relevant_cases": total_cases,
-            "cases_covering_changed_behavior": 0,
-            "coverage_ratio": 0.0,
-            "platform": source_platform,
-            "dataset": source_target,
-            "mode": "coverage_aware",
-            "corpus_status": "available",
-            "retrieval_notes": " ".join(notes).strip(),
-        }
-
-    unmapped_artifacts = _build_stage2_unmapped_artifacts(mapping_resolutions)
-    bootstrap_reason = reason
-    if blocked_requests:
-        bootstrap_reason = f"{bootstrap_reason} Embedding spend cap blocked {blocked_requests} embedding request(s)."
-    if unmapped_artifacts:
-        bootstrap_reason = f"{bootstrap_reason} Unmapped artifacts: {', '.join(unmapped_artifacts)}."
-    fetch_requests = int(retrieval.get("fetch_request_count", 0) or 0) if isinstance(retrieval, dict) else 0
-    corpus_status = "empty" if fetch_requests > 0 else "unavailable"
-    return {
-        "total_relevant_cases": total_cases,
-        "cases_covering_changed_behavior": 0,
-        "coverage_ratio": 0.0,
-        "platform": source_platform,
-        "dataset": source_target,
-        "mode": "bootstrap",
-        "corpus_status": corpus_status,
-        "bootstrap_reason": bootstrap_reason.strip(),
-    }
+        )
+    if summaries:
+        return summaries
+    for change in stage1_manifest.get("changes", []):
+        artifact_path = change.get("artifact_path")
+        if not isinstance(artifact_path, str):
+            continue
+        summaries.append(
+            CoverageTargetSummary(
+                target_id=f"bootstrap::{artifact_path}",
+                method_kind="unknown",
+                total_relevant_cases=0,
+                cases_covering_changed_behavior=0,
+                coverage_ratio=0.0,
+                mode="bootstrap",
+                corpus_status="unavailable",
+                profile_status="bootstrap",
+                bootstrap_reason=reason,
+                analysis_notes=[],
+            )
+        )
+    return summaries
 
 
-def _coerce_partial_stage2_coverage_summary(partial_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+def _coerce_partial_stage2_manifest(
+    *,
+    partial_payload: dict[str, Any] | None,
+    run_id: str,
+    stage1_manifest: dict,
+    timestamp: str,
+    runtime_metadata: dict[str, Any],
+) -> EvalAnalysisManifest | None:
     if not isinstance(partial_payload, dict):
         return None
-    raw_coverage_summary = partial_payload.get("coverage_summary")
-    if not isinstance(raw_coverage_summary, dict):
-        return None
-    normalized = _normalize_stage2_payload({"coverage_summary": deepcopy(raw_coverage_summary)})
+    candidate = dict(partial_payload)
+    candidate["run_id"] = run_id
+    candidate["stage1_run_id"] = stage1_manifest.get("run_id", "")
+    candidate["timestamp"] = timestamp
+    candidate["runtime_metadata"] = runtime_metadata
+    candidate.setdefault(
+        "unresolved_artifacts",
+        [
+            change.get("artifact_path")
+            for change in stage1_manifest.get("changes", [])
+            if isinstance(change.get("artifact_path"), str)
+        ],
+    )
     try:
-        return CoverageSummary.model_validate(normalized["coverage_summary"]).model_dump(mode="json")
+        return EvalAnalysisManifest.model_validate(candidate)
     except Exception:
         return None
-
-
-def _coerce_partial_stage2_gaps(partial_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(partial_payload, dict):
-        return []
-    raw_gaps = partial_payload.get("gaps")
-    if not isinstance(raw_gaps, list):
-        return []
-    valid_gaps: list[dict[str, Any]] = []
-    seen_gap_ids: set[str] = set()
-    for raw_gap in raw_gaps:
-        if not isinstance(raw_gap, dict):
-            continue
-        try:
-            gap = CoverageGap.model_validate(raw_gap)
-        except Exception:
-            continue
-        if gap.gap_id in seen_gap_ids:
-            continue
-        seen_gap_ids.add(gap.gap_id)
-        valid_gaps.append(gap.model_dump(mode="json"))
-    return valid_gaps
 
 
 def _build_stage2_budget_fallback(
     *,
     stage1_manifest: dict,
-    mapping_resolutions: list[dict[str, Any]],
     run_id: str,
     timestamp: str,
     runtime_metadata: dict[str, Any],
     reason: str,
     partial_payload: dict[str, Any] | None = None,
-) -> CoverageGapManifest:
-    coverage_summary = _coerce_partial_stage2_coverage_summary(partial_payload) or _build_stage2_fallback_coverage_summary(
-        mapping_resolutions=mapping_resolutions,
+) -> EvalAnalysisManifest:
+    partial_manifest = _coerce_partial_stage2_manifest(
+        partial_payload=partial_payload,
+        run_id=run_id,
+        stage1_manifest=stage1_manifest,
+        timestamp=timestamp,
         runtime_metadata=runtime_metadata,
-        reason=reason,
     )
-    gaps = _coerce_partial_stage2_gaps(partial_payload) or _build_stage2_fallback_gaps(stage1_manifest)
-    manifest_payload = {
-        "run_id": run_id,
-        "stage1_run_id": stage1_manifest.get("run_id", ""),
-        "timestamp": timestamp,
-        "unmapped_artifacts": _build_stage2_unmapped_artifacts(mapping_resolutions),
-        "coverage_summary": coverage_summary,
-        "gaps": gaps,
-    }
-    return CoverageGapManifest.model_validate(manifest_payload)
+    if partial_manifest is not None:
+        return partial_manifest
+
+    partial_targets = _coerce_partial_stage2_targets(partial_payload)
+    resolved_targets = partial_targets or [
+        _build_bootstrap_target(change, reason)
+        for change in stage1_manifest.get("changes", [])
+        if isinstance(change.get("artifact_path"), str)
+    ]
+    gaps = _coerce_partial_stage2_gaps(partial_payload) or _build_stage2_fallback_gaps(stage1_manifest, reason)
+    coverage_by_target = _coerce_partial_stage2_coverage(partial_payload) or _build_stage2_fallback_coverage(
+        stage1_manifest,
+        resolved_targets,
+        reason,
+    )
+    unresolved_artifacts = [
+        change.get("artifact_path")
+        for change in stage1_manifest.get("changes", [])
+        if isinstance(change.get("artifact_path"), str)
+    ]
+    return EvalAnalysisManifest.model_validate(
+        {
+            "run_id": run_id,
+            "stage1_run_id": stage1_manifest.get("run_id", ""),
+            "timestamp": timestamp,
+            "unresolved_artifacts": unresolved_artifacts,
+            "resolved_targets": [target.model_dump(mode="json") for target in resolved_targets],
+            "coverage_by_target": [summary.model_dump(mode="json") for summary in coverage_by_target],
+            "gaps": [gap.model_dump(mode="json") for gap in gaps],
+            "runtime_metadata": runtime_metadata,
+        }
+    )
 
 
 def run_stage2(
@@ -314,32 +413,27 @@ def run_stage2(
     run_id = f"stage2-{int(time.time())}"
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     resolved_spend = config.resolve_spend_caps()
-    mapping_resolutions = _build_stage2_mapping_resolutions(stage1_manifest, config)
+    rule_resolutions = _build_stage2_rule_resolutions(stage1_manifest, config)
     bootstrap_brief = _build_stage2_bootstrap_brief(stage1_manifest)
     prompt = render_stage2_prompt(
         stage1_manifest,
-        mapping_resolutions=mapping_resolutions,
+        rule_resolutions=rule_resolutions,
         bootstrap_brief=bootstrap_brief,
     )
 
     change_count = len(stage1_manifest.get("changes", []))
-    explicit_mapping_count = sum(
-        1 for resolution in mapping_resolutions if resolution.get("mapping_status") == "explicit"
-    )
-    unresolved_mapping_count = sum(
-        1 for resolution in mapping_resolutions if resolution.get("mapping_status") == "unresolved"
-    )
+    explicit_rule_count = sum(1 for resolution in rule_resolutions if resolution.get("rule_status") == "explicit")
+    unresolved_rule_count = sum(1 for resolution in rule_resolutions if resolution.get("rule_status") == "unresolved")
     prompt_tokens = count_tokens(prompt)
     print(
-        f"[stage-2] changes_from_stage1={change_count} explicit_mappings={explicit_mapping_count} "
-        f"unresolved_mappings={unresolved_mapping_count} mcp_configured=True "
-        f"prompt_tokens={prompt_tokens}",
+        f"[stage-2] changes_from_stage1={change_count} explicit_rules={explicit_rule_count} "
+        f"unresolved_rules={unresolved_rule_count} prompt_tokens={prompt_tokens}",
         file=sys.stderr,
         flush=True,
     )
 
     output_schema = simplify_schema(
-        CoverageGapManifest.model_json_schema(),
+        EvalAnalysisManifest.model_json_schema(),
         remove_keys=_STAGE2_INJECT_KEYS,
     )
 
@@ -356,19 +450,15 @@ def run_stage2(
             "parity_stage2": {
                 "type": "sdk",
                 "name": "parity-stage2",
-                # FastMCP wraps a low-level MCP server, and the Claude Agent SDK's
-                # in-process transport expects that low-level server instance.
                 "instance": stage2_runtime.server._mcp_server,
             }
         },
         max_turns=40,
         max_budget_usd=resolved_spend.stage2_agent_cap_usd,
         cwd=str(repo_root),
-        output_format={
-            "type": "json_schema",
-            "schema": output_schema,
-        },
+        output_format={"type": "json_schema", "schema": output_schema},
     )
+
     degraded_reason: str | None = None
     try:
         result = asyncio.run(
@@ -376,25 +466,23 @@ def run_stage2(
                 stage_num=2,
                 prompt=prompt,
                 options=options,
-                output_model=CoverageGapManifest,
+                output_model=EvalAnalysisManifest,
                 inject_fields={
                     "run_id": run_id,
                     "stage1_run_id": stage1_manifest.get("run_id", ""),
                     "timestamp": timestamp,
                 },
-                normalize_payload=_normalize_stage2_payload,
             )
         )
     except BudgetExceededError as exc:
         degraded_reason = (
-            "Stage 2 agent spend cap was exhausted before full coverage analysis completed. "
-            "Returning a degraded manifest derived from Stage 1 and any host-side retrieval state."
+            "Stage 2 spend cap was exhausted before full eval analysis completed. "
+            "Returning a degraded analysis manifest from partial discovery and bootstrap gaps."
         )
         print(f"[stage-2] degraded_fallback: {degraded_reason}", file=sys.stderr, flush=True)
         result = StageRunResult(
             data=_build_stage2_budget_fallback(
                 stage1_manifest=stage1_manifest,
-                mapping_resolutions=mapping_resolutions,
                 run_id=run_id,
                 timestamp=timestamp,
                 runtime_metadata=stage2_runtime.toolbox.build_runtime_metadata(),
@@ -408,27 +496,30 @@ def run_stage2(
             timestamp=datetime.now(tz=timezone.utc).isoformat(),
             raw_result=None,
         )
-    gap_count = len(getattr(result.data, "gaps", []))
-    print(f"[stage-2] gaps_identified={gap_count}", file=sys.stderr, flush=True)
-    coverage_summary = getattr(result.data, "coverage_summary", None)
-    if coverage_summary is not None:
-        source = ":".join(
-            bit for bit in [coverage_summary.platform, coverage_summary.dataset] if bit
-        ) or "none"
-        retrieval_notes = coverage_summary.retrieval_notes or coverage_summary.bootstrap_reason or "none"
-        retrieval_preview = retrieval_notes.replace("\n", " ").strip()[:160]
+
+    runtime_metadata = stage2_runtime.toolbox.build_runtime_metadata()
+    result.data.runtime_metadata = runtime_metadata
+    target_count = len(result.data.resolved_targets)
+    gap_count = len(result.data.gaps)
+    print(
+        f"[stage-2] targets_resolved={target_count} gaps_identified={gap_count}",
+        file=sys.stderr,
+        flush=True,
+    )
+    for target in result.data.resolved_targets[:5]:
         print(
-            f"[stage-2] retrieval_path: mode={coverage_summary.mode} corpus_status={coverage_summary.corpus_status} "
-            f"source={source} notes={retrieval_preview}",
+            f"[stage-2] target={target.profile.target_id} platform={target.profile.platform} "
+            f"method={target.method_profile.method_kind} renderability={target.method_profile.renderability_status} "
+            f"samples={len(target.samples)}",
             file=sys.stderr,
             flush=True,
         )
-    runtime_metadata = stage2_runtime.toolbox.build_runtime_metadata()
+
     result.extras = {
         **(result.extras or {}),
         "prompt_tokens": prompt_tokens,
-        "explicit_mappings": explicit_mapping_count,
-        "unresolved_mappings": unresolved_mapping_count,
+        "explicit_rules": explicit_rule_count,
+        "unresolved_rules": unresolved_rule_count,
         "resolved_spend_caps": {
             "analysis_total_spend_cap_usd": resolved_spend.analysis_total_spend_cap_usd,
             "stage1_agent_cap_usd": resolved_spend.stage1_agent_cap_usd,
@@ -442,3 +533,4 @@ def run_stage2(
         **runtime_metadata,
     }
     return result
+

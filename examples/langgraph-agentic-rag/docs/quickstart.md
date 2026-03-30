@@ -140,7 +140,7 @@ In your GitHub repo, go to **Settings → Secrets and variables → Actions** an
 |---|---|
 | `ANTHROPIC_API_KEY` | Stages 1, 2, and 3 |
 | `OPENAI_API_KEY` | Stage 2 coverage-aware mode (`embed-batch` compares probe candidates against the LangSmith dataset using OpenAI embeddings) |
-| `LANGSMITH_API_KEY` | Stage 2 dataset query and Stage 4 probe writeback |
+| `LANGSMITH_API_KEY` | Stage 2 dataset query and deterministic writeback |
 
 Then create the approval label:
 
@@ -170,20 +170,21 @@ behavior_artifacts:
     - "*_template"
 ```
 
-The `mappings` section wires `app/graph.py` to the `lilian-weng-rag-baseline` LangSmith dataset. This is what enables Stage 2 to run in coverage-aware mode — it knows which existing eval cases apply to changes in that file.
+The `evals.rules` section gives Parity a preferred LangSmith target for `app/graph.py`. Stage 2 still performs topology discovery, but it starts from this preferred target instead of treating the repo as fully unstructured.
 
 ```yaml
-mappings:
-  - artifact: "app/graph.py"
-    platform: langsmith
-    dataset: "lilian-weng-rag-baseline"
+evals:
+  rules:
+    - artifact: "app/graph.py"
+      preferred_platform: langsmith
+      preferred_target: "lilian-weng-rag-baseline"
 ```
 
 **`.github/workflows/parity.yml`** — the GitHub Actions workflow with three jobs:
 
 - `parity-analyze`: runs on every PR, executes Stages 1–3, uploads artifacts
 - `parity-comment`: posts the PR comment from the saved Stage 3 artifact
-- `parity-write`: runs on merge when the `parity:approve` label is present, downloads the Stage 3 artifact, writes probes to LangSmith, and posts a merged-PR writeback result comment
+- `parity-write`: runs on merge when the `parity:approve` label is present, downloads the Stage 3 artifact, writes native-ready evals, and posts a merged-PR writeback result comment
 
 ---
 
@@ -226,15 +227,17 @@ Compare your output against the reference examples in [`expected_outputs/`](../e
 - `GENERATE_PROMPT` change: `artifact_type: python_variable`, inferred intent is per-claim citation of source blog posts
 - Two `unintended_risk_flags`: one about missing source metadata in the retriever, one about the citation instruction potentially conflicting with the three-sentence conciseness constraint
 
-**Stage 2 (`stage2.json`)** — should show `coverage_ratio: 0.0` (no existing baseline cases test citation behavior at all). Three gaps should appear:
+**Stage 2 (`stage2.json`)** — should show the resolved target, its discovered eval method profile, and the coverage gaps tied to that target.
+
+The Stage 2 analysis should show `coverage_ratio: 0.0` for the discovered target (no existing baseline cases test citation behavior at all). Three gaps should appear:
 - `gap_001` (uncovered): no case checks whether generated answers include a citation or whether any citation is accurate
 - `gap_002` (boundary_shift): no case tests citation accuracy when retrieved chunks span multiple blog posts in a single response
 - `gap_003` (uncovered): no case tests whether the model actually refrains from fabricating a source when chunk text is ambiguous
 
-**Stage 3 (`stage3.json`)** — should propose three probes in ascending order of difficulty:
-- A `regression_guard` with a single-source question (one clear answer in one post) — the simplest citation check
-- A `boundary_probe` with a cross-post question — tests whether the model correctly attributes claims to the right post when both are relevant
-- An `overcorrection_probe` with an ambiguous question — tests whether the model actually omits a citation rather than producing a vague or fabricated one
+**Stage 3 (`stage3.json`)** — should propose native eval intents plus renderings in ascending order of difficulty:
+- A `regression_guard` with a single-source question (one clear answer in one post)
+- A `boundary_probe` with a cross-post question
+- An `overcorrection_probe` with an ambiguous question
 
 ---
 

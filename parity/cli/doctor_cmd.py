@@ -67,8 +67,8 @@ def doctor_command(config_path: Path, ci: bool) -> None:
             key_name = config.platforms.arize_phoenix.api_key_env
             checks.append((bool(os.environ.get(key_name)), f"{key_name} is set (arize_phoenix)"))
 
-        # Check 5: OPENAI_API_KEY if mappings configured
-        if config.mappings:
+        # Check 5: OPENAI_API_KEY if eval rules are configured
+        if config.evals.rules:
             openai_key = os.environ.get("OPENAI_API_KEY", "")
             checks.append((bool(openai_key), "OPENAI_API_KEY is set (required for coverage-aware mode)"))
 

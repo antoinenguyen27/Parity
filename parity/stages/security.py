@@ -64,10 +64,11 @@ def build_stage3_options(
     max_turns: int,
     max_budget_usd: float,
     output_schema: dict[str, Any],
+    mcp_servers: dict[str, Any] | None = None,
 ) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         tools=[],
-        mcp_servers={},
+        mcp_servers=mcp_servers or {},
         max_turns=max_turns,
         max_budget_usd=max_budget_usd,
         cwd=str(Path(cwd).resolve()),

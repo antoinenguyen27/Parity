@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from parity.export import export_deepeval_stub, render_summary_markdown, write_run_artifacts
+from parity.export import export_native_render_artifacts, render_summary_markdown, write_run_artifacts
 from parity.github import render_pr_comment, render_results_comment
-from parity.models import BehaviorChangeManifest, CoverageGapManifest, ProbeProposal
+from parity.models import (
+    EvalAnalysisManifest,
+    BehaviorChangeManifest,
+    EvalProposalManifest,
+)
 
 _FIXTURES = Path(__file__).parents[1] / "fixtures"
 
@@ -16,13 +20,13 @@ def _load_fixture(name: str) -> dict:
 
 def test_write_run_artifacts_creates_expected_files(tmp_path: Path) -> None:
     manifest = BehaviorChangeManifest.model_validate(_load_fixture("sample_manifest.json"))
-    gaps = CoverageGapManifest.model_validate(_load_fixture("sample_gaps.json"))
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
+    analysis = EvalAnalysisManifest.model_validate(_load_fixture("sample_analysis.json"))
+    proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
 
     outputs = write_run_artifacts(
         run_dir=tmp_path / ".parity" / "runs" / proposal.commit_sha,
         stage1_manifest=manifest,
-        stage2_manifest=gaps,
+        stage2_manifest=analysis,
         proposal=proposal,
         metadata={"stage": 3},
     )
@@ -30,109 +34,67 @@ def test_write_run_artifacts_creates_expected_files(tmp_path: Path) -> None:
     assert outputs["proposal"].exists()
     assert outputs["summary"].exists()
     assert outputs["metadata"].exists()
-    assert outputs["test_file"].exists()
-    assert outputs["prompt_file"].exists()
-    assert "Probe Summary" in outputs["summary"].read_text(encoding="utf-8")
+    assert outputs["render_artifact_0"].exists()
+    assert "Eval Proposal Summary" in outputs["summary"].read_text(encoding="utf-8")
 
 
-def test_render_pr_comment_includes_marker_and_probe_table() -> None:
+def test_render_pr_comment_includes_marker_and_write_status_table() -> None:
     manifest = BehaviorChangeManifest.model_validate(_load_fixture("sample_manifest.json"))
-    gaps = CoverageGapManifest.model_validate(_load_fixture("sample_gaps.json"))
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
+    analysis = EvalAnalysisManifest.model_validate(_load_fixture("sample_analysis.json"))
+    proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
 
-    comment = render_pr_comment(proposal, stage1_manifest=manifest, stage2_manifest=gaps)
+    comment = render_pr_comment(
+        proposal,
+        stage1_manifest=manifest,
+        stage2_manifest=analysis,
+    )
 
     assert comment.startswith("<!-- parity-comment -->")
     assert "### Proposed Evals (2)" in comment
-    assert "probe_001" in comment  # Now included in collapsible details
-    assert "boundary_probe" in comment
-    assert "<details>" in comment  # Collapsible sections present
-    assert "Expand each eval below" in comment  # Instruction text present
+    assert "intent_001" in comment
+    assert "native_ready" in comment
+    assert "row_local" in comment
+    assert "<details>" in comment
 
 
-def test_render_pr_comment_reports_bootstrap_mode_without_eval_corpus() -> None:
-    manifest = BehaviorChangeManifest.model_validate(_load_fixture("sample_manifest.json"))
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
-    bootstrap_gaps = CoverageGapManifest.model_validate(
-        {
-            "run_id": "stage2-bootstrap",
-            "stage1_run_id": "stage1-run",
-            "timestamp": "2026-03-14T10:01:00Z",
-            "unmapped_artifacts": [],
-            "coverage_summary": {
-                "total_relevant_cases": 0,
-                "cases_covering_changed_behavior": 0,
-                "coverage_ratio": 0.0,
-                "platform": "langsmith",
-                "dataset": "citation-agent-evals",
-                "mode": "bootstrap",
-                "corpus_status": "empty",
-                "bootstrap_reason": "The mapped dataset exists but contains no eval cases yet.",
-            },
-            "gaps": [],
-        }
-    )
-
-    comment = render_pr_comment(proposal, stage1_manifest=manifest, stage2_manifest=bootstrap_gaps)
-
-    assert "Starter mode" in comment
-    assert "contains no eval cases yet" in comment
-    assert "grounded in your diff and product context" in comment
-
-
-def test_render_summary_markdown_lists_probes() -> None:
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
+def test_render_summary_markdown_lists_intents() -> None:
+    proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
     summary = render_summary_markdown(proposal)
 
-    assert "# Parity Probe Summary" in summary
-    assert "probe_001" in summary
+    assert "# Parity Eval Proposal Summary" in summary
+    assert "intent_001" in summary
+    assert "Evaluator linkage: row_local" in summary
 
 
 def test_render_results_comment_handles_zero_writes() -> None:
     comment = render_results_comment(
-        dataset_name="langsmith:demo-dataset",
+        targets="promptfoo:evals/promptfooconfig.yaml",
         total_written=0,
-        failures=[{"probe_id": "n/a", "probe_type": "n/a", "failure": "No write target found"}],
+        failures=["No native-ready renderings were available."],
     )
 
     assert "No evals were written" in comment
     assert "Targets attempted" in comment
 
 
-def test_write_run_artifacts_includes_deepeval_file(tmp_path: Path) -> None:
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
+def test_export_native_render_artifacts_writes_promptfoo_file(tmp_path: Path) -> None:
+    proposal = EvalProposalManifest.model_validate(_load_fixture("sample_proposal.json"))
 
-    outputs = write_run_artifacts(
-        run_dir=tmp_path / "runs" / proposal.commit_sha,
-        proposal=proposal,
-        metadata={},
-    )
+    artifacts = export_native_render_artifacts(proposal, output_dir=tmp_path / "artifacts")
 
-    assert "deepeval" in outputs
-    assert outputs["deepeval"].exists()
-    content = outputs["deepeval"].read_text(encoding="utf-8")
-    assert "LLMTestCase" in content
-    assert "CASES" in content
+    assert len(artifacts) == 1
+    assert artifacts[0].artifact_kind == "promptfoo_config"
+    assert Path(artifacts[0].path).exists()
 
 
-def test_export_deepeval_stub_contains_one_entry_per_probe(tmp_path: Path) -> None:
-    proposal = ProbeProposal.model_validate(_load_fixture("sample_proposal.json"))
-
-    path = export_deepeval_stub(proposal, output_path=tmp_path / "probes_deepeval.py")
-
-    assert path.exists()
-    content = path.read_text(encoding="utf-8")
-    # sample_proposal has 2 probes → 2 LLMTestCase calls
-    assert content.count("LLMTestCase(") == len(proposal.probes)
-
-
-def test_render_results_comment_with_pass_fail_counts() -> None:
+def test_render_results_comment_lists_skipped_and_unsupported_targets() -> None:
     comment = render_results_comment(
-        dataset_name="langsmith:evals",
+        targets="promptfoo:evals/promptfooconfig.yaml",
         total_written=3,
-        passed=2,
-        failed=1,
+        skipped_review_only=["bootstrap:prompts/foo.md"],
+        unsupported_targets=["braintrust:legacy/unsupported"],
     )
 
     assert "3 evals written to" in comment
-    assert "2 passed, 1 failed" in comment
+    assert "Skipped review-only targets" in comment
+    assert "Unsupported targets" in comment

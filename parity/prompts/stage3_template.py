@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from typing import Any
 
 from parity.context import count_tokens, sample_traces, trim_collection_to_budget, truncate_text
 
 STAGE3_MODEL_CONTEXT_WINDOW_TOKENS = 100_000
-STAGE3_RESPONSE_HEADROOM_BASE_TOKENS = 12_000
-STAGE3_RESPONSE_HEADROOM_PER_CANDIDATE_TOKENS = 400
+STAGE3_RESPONSE_HEADROOM_BASE_TOKENS = 14_000
+STAGE3_RESPONSE_HEADROOM_PER_CANDIDATE_TOKENS = 450
 STAGE3_MIN_INPUT_CONTEXT_LIMIT_TOKENS = 50_000
 
-STAGE3_SYSTEM_TEMPLATE = """You are a behavioral probe generator for LLM-based agent systems.
+STAGE3_SYSTEM_TEMPLATE = """You are a native eval synthesis specialist for LLM-based agent systems.
 
 PRODUCT CONTEXT:
 {product_context}
@@ -34,48 +33,49 @@ REAL USER INTERACTION SAMPLES:
 STAGE 1 BRIEF:
 {stage1_brief_json}
 
-COVERAGE SUMMARY:
-{coverage_summary_json}
+STAGE 2 ANALYSIS SUMMARY:
+{analysis_summary_json}
 
-GAPS:
+GAP SUMMARIES:
 {gaps_json}
 
-NEAREST EXISTING CASES:
-{nearest_cases_json}
+HOST-OWNED EVIDENCE TOOLS:
+- `list_gap_dossiers`
+- `read_gap_dossier`
+- `list_targets`
+- `read_target_profile`
+- `list_evaluator_dossiers`
+- `read_evaluator_dossier`
+- `read_target_samples`
+- `read_case_snapshot`
+- `read_repo_eval_asset_excerpt`
+
+GOAL:
+Generate semantic probe intents that fit the discovered eval method and native row conventions for each target. Use the evidence tools before committing to native bindings, metadata hints, assertion hints, output bindings, or native reference-output shapes.
 
 QUALITY CRITERIA:
 - Specific to the diff
-- Testable
-- Novel relative to nearest existing cases
+- Testable in the discovered eval idiom
+- Novel relative to compatible nearest cases
 - Realistic for the product and users
-- Generate up to {candidate_probe_pool_limit} candidate probes
-- Return the full candidate pool in `probes`
-- The host will rerank, diversify, and keep at most {proposal_probe_limit} final proposal probes for review
+- Strong fit for the resolved target and method
+- Preserve native-feeling row attributes instead of reverting to generic eval shapes
+- Generate up to {candidate_intent_pool_limit} candidate intents
+- Return the full candidate pool in `intents`
+- The host will rerank, diversify, and keep at most {proposal_limit} final intents for review
 
-BOOTSTRAP MODE:
-If coverage_summary.mode is `bootstrap`, there is no usable eval corpus for comparison.
-In that case:
-- Generate plausible starter evals from the diff, system prompt, guardrails, product context,
-  user profiles, interaction patterns, known failures, and trace samples.
-- Treat empty nearest_existing_cases as intentional.
-- Do not invent comparisons to missing evals.
-- Prefer expected_improvement, regression_guard, overcorrection_probe, ambiguity_probe, and
-  edge_case probes over boundary_probe unless a real nearest case exists.
+RULES:
+- Respect the `target_id` and `method_kind` in each gap.
+- Use the evidence tools to inspect native sample rows, field patterns, repo-local eval assets, and evaluator dossiers before you choose `native_input_binding`, `native_output_binding`, `native_reference_output`, `native_metadata_hints`, `native_tag_hints`, `native_assertion_hints`, `evaluator_dossier_id`, or `preferred_evaluator_binding`.
+- Use multi-turn conversation histories when `is_conversational` is true.
+- For bootstrap gaps, generate plausible starter eval intents without pretending there is existing corpus coverage.
+- Make `pass_criteria` explicit enough for a deterministic renderer to map into native assertions.
+- Populate `native_reference_output` when the target’s existing rows use a structured reference output or a non-default output key that should be preserved.
+- Populate `evaluator_dossier_id` when one discovered dossier clearly matches the intended evaluator regime; otherwise leave it null.
+- Only populate `preferred_evaluator_binding` when the discovered evaluator regime is clear from the target evidence; otherwise leave it null.
+- `failure_mode` should explain the likely miss or regression the eval should expose.
 
-{multi_turn_block}
-
-Output ProbeProposal JSON only. No prose.
-"""
-
-MULTI_TURN_BLOCK = """MULTI-TURN PROBE GENERATION:
-This gap is for a conversational agent. Generate probe inputs as full conversation
-histories, not single-turn strings.
-
-Rules:
-- The conversation must have at least 2 turns before the test stimulus
-- Prior turns must be realistic for this agent and these users
-- The final user message is the test stimulus
-- The expected behavior and rubric must target the final assistant response only
+Output EvalIntentCandidateBundle JSON only. No prose.
 """
 
 
@@ -88,34 +88,22 @@ def extract_stage1_brief(stage1_manifest: dict) -> dict:
             {
                 "artifact_path": change.get("artifact_path"),
                 "inferred_intent": change.get("inferred_intent"),
+                "change_summary": change.get("change_summary"),
                 "unintended_risk_flags": change.get("unintended_risk_flags", []),
                 "affected_components": change.get("affected_components", []),
+                "behavioral_signatures": change.get("behavioral_signatures", []),
+                "eval_search_hints": change.get("eval_search_hints", []),
+                "validation_focus": change.get("validation_focus", []),
             }
             for change in stage1_manifest.get("changes", [])
         ],
     }
 
 
-def format_nearest_cases(gaps: list[dict[str, Any]], *, max_per_gap: int = 5) -> str:
-    reduced: list[dict[str, Any]] = []
-    for gap in gaps:
-        cases = []
-        for case in gap.get("nearest_existing_cases", [])[:max_per_gap]:
-            reduced_case = dict(case)
-            reduced_case["input_normalized"] = truncate_text(
-                reduced_case.get("input_normalized", ""),
-                200,
-            )
-            cases.append(reduced_case)
-        reduced.append({"gap_id": gap.get("gap_id"), "nearest_existing_cases": cases})
-    serialized = json.dumps(reduced, indent=2)
-    return truncate_text(serialized, 4000)
-
-
-def compute_stage3_input_context_limit_tokens(candidate_probe_pool_limit: int) -> int:
+def compute_stage3_input_context_limit_tokens(candidate_intent_pool_limit: int) -> int:
     reserved_response_tokens = (
         STAGE3_RESPONSE_HEADROOM_BASE_TOKENS
-        + (candidate_probe_pool_limit * STAGE3_RESPONSE_HEADROOM_PER_CANDIDATE_TOKENS)
+        + (candidate_intent_pool_limit * STAGE3_RESPONSE_HEADROOM_PER_CANDIDATE_TOKENS)
     )
     return max(
         STAGE3_MIN_INPUT_CONTEXT_LIMIT_TOKENS,
@@ -128,17 +116,56 @@ def render_stage3_prompt(
     stage2_manifest: dict,
     context,
     *,
-    proposal_probe_limit: int,
-    candidate_probe_pool_limit: int,
+    proposal_limit: int,
+    candidate_intent_pool_limit: int,
 ) -> str:
     stage1_brief = extract_stage1_brief(stage1_manifest)
     traces = sample_traces(context.traces_dir, max_samples=context.trace_max_samples)
     trimmed_traces = trim_collection_to_budget(traces, per_item_budget=300, total_budget=6000)
     trace_samples = "\n\n---\n\n".join(trimmed_traces)
-    context_pack_limit_tokens = compute_stage3_input_context_limit_tokens(candidate_probe_pool_limit)
-    multi_turn_block = (
-        MULTI_TURN_BLOCK if any(gap.get("is_conversational") for gap in stage2_manifest.get("gaps", [])) else ""
-    )
+    context_pack_limit_tokens = compute_stage3_input_context_limit_tokens(candidate_intent_pool_limit)
+    analysis_summary = {
+        "resolved_targets": [
+            {
+                "target_id": target.get("profile", {}).get("target_id"),
+                "platform": target.get("profile", {}).get("platform"),
+                "locator": target.get("profile", {}).get("locator"),
+                "artifact_paths": target.get("profile", {}).get("artifact_paths", []),
+                "method_kind": target.get("method_profile", {}).get("method_kind"),
+                "renderability_status": target.get("method_profile", {}).get("renderability_status"),
+                "supports_multi_assert": target.get("method_profile", {}).get("supports_multi_assert"),
+                "evaluator_scope": target.get("method_profile", {}).get("evaluator_scope"),
+                "execution_surface": target.get("method_profile", {}).get("execution_surface"),
+                "formal_discovery_status": target.get("method_profile", {}).get("formal_discovery_status"),
+                "formal_binding_count": target.get("method_profile", {}).get("formal_binding_count"),
+                "binding_candidates": target.get("method_profile", {}).get("binding_candidates", []),
+                "evaluator_dossier_count": len(target.get("evaluator_dossiers", [])),
+                "resolution_notes": target.get("resolution_notes", []),
+            }
+            for target in stage2_manifest.get("resolved_targets", [])
+        ],
+        "coverage_by_target": stage2_manifest.get("coverage_by_target", []),
+    }
+    gap_summaries = [
+        {
+            "gap_id": gap.get("gap_id"),
+            "artifact_path": gap.get("artifact_path"),
+            "target_id": gap.get("target_id"),
+            "method_kind": gap.get("method_kind"),
+            "gap_type": gap.get("gap_type"),
+            "related_risk_flag": gap.get("related_risk_flag"),
+            "description": gap.get("description"),
+            "why_gap_is_real": gap.get("why_gap_is_real"),
+            "recommended_eval_area": gap.get("recommended_eval_area"),
+            "recommended_eval_mode": gap.get("recommended_eval_mode"),
+            "evaluator_dossier_ids": gap.get("evaluator_dossier_ids", []),
+            "native_shape_hints": gap.get("native_shape_hints", []),
+            "profile_status": gap.get("profile_status"),
+            "is_conversational": gap.get("is_conversational", False),
+            "confidence": gap.get("confidence"),
+        }
+        for gap in stage2_manifest.get("gaps", [])
+    ]
 
     rendered = STAGE3_SYSTEM_TEMPLATE.format(
         product_context=truncate_text(context.product, 4000),
@@ -148,31 +175,25 @@ def render_stage3_prompt(
         bad_examples=truncate_text(context.bad_examples, 4000),
         trace_samples=trace_samples,
         stage1_brief_json=json.dumps(stage1_brief, indent=2),
-        coverage_summary_json=json.dumps(stage2_manifest.get("coverage_summary") or {}, indent=2),
-        gaps_json=json.dumps(stage2_manifest.get("gaps", []), indent=2),
-        nearest_cases_json=format_nearest_cases(stage2_manifest.get("gaps", []), max_per_gap=5),
-        proposal_probe_limit=proposal_probe_limit,
-        candidate_probe_pool_limit=candidate_probe_pool_limit,
-        multi_turn_block=multi_turn_block,
+        analysis_summary_json=json.dumps(analysis_summary, indent=2),
+        gaps_json=json.dumps(gap_summaries, indent=2),
+        proposal_limit=proposal_limit,
+        candidate_intent_pool_limit=candidate_intent_pool_limit,
     )
 
     if count_tokens(rendered) <= context_pack_limit_tokens:
         return rendered
 
-    reduced_good = truncate_text(context.good_examples, 1500)
-    reduced_bad = truncate_text(context.bad_examples, 2000)
     return STAGE3_SYSTEM_TEMPLATE.format(
-        product_context=truncate_text(context.product, 4000),
-        users_context=truncate_text(context.users, 2000),
-        interactions_context=truncate_text(context.interactions, 3000),
-        good_examples=reduced_good,
-        bad_examples=reduced_bad,
+        product_context=truncate_text(context.product, 3000),
+        users_context=truncate_text(context.users, 1500),
+        interactions_context=truncate_text(context.interactions, 2000),
+        good_examples=truncate_text(context.good_examples, 1500),
+        bad_examples=truncate_text(context.bad_examples, 2000),
         trace_samples="",
         stage1_brief_json=json.dumps(stage1_brief, indent=2),
-        coverage_summary_json=json.dumps(stage2_manifest.get("coverage_summary") or {}, indent=2),
-        gaps_json=json.dumps(stage2_manifest.get("gaps", []), indent=2),
-        nearest_cases_json=format_nearest_cases(stage2_manifest.get("gaps", []), max_per_gap=5),
-        proposal_probe_limit=proposal_probe_limit,
-        candidate_probe_pool_limit=candidate_probe_pool_limit,
-        multi_turn_block=multi_turn_block,
+        analysis_summary_json=json.dumps(analysis_summary, indent=2),
+        gaps_json=json.dumps(gap_summaries, indent=2),
+        proposal_limit=proposal_limit,
+        candidate_intent_pool_limit=candidate_intent_pool_limit,
     )

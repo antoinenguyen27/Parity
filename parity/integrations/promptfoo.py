@@ -1,99 +1,148 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from parity.models import EvalCase, ProbeCase, normalize_input
-from parity.models.eval_case import ConversationMessage
-from parity.models.eval_case import flatten_expected_output
-
-CONVERSATIONAL_PROMPT_TEMPLATE = """[
-{% for message in messages %}
-{
-  "role": "{{ message.role }}",
-  "content": {{ message.content | dump }}
-}{% if not loop.last %},{% endif %}
-{% endfor %}
-]"""
+from parity.models import EvalCaseSnapshot, EvaluatorBindingCandidate, NativeAssertion, NativeEvalRendering, normalize_input
 
 
-def promptfoo_assertion_type(expected_behavior_type: str) -> str:
-    mapping = {
-        "exact_output": "equals",
-        "contains": "contains",
-        "not_contains": "not-contains",
-        "llm_rubric": "llm-rubric",
-        "format_check": "javascript",
-    }
-    return mapping.get(expected_behavior_type, expected_behavior_type.replace("_", "-"))
+def _promptfoo_assertion_kind(assertion_type: str | None) -> str:
+    if assertion_type == "llm-rubric":
+        return "judge"
+    if assertion_type in {"equals", "contains", "not-contains", "javascript"}:
+        return "deterministic"
+    return "unknown"
 
 
-def _serialize_probe_input(value: Any) -> Any:
+def _serialize_rendering_input(value: Any) -> Any:
     if isinstance(value, list):
-        return [item.model_dump() if isinstance(item, ConversationMessage) else item for item in value]
+        return [item.model_dump() if hasattr(item, "model_dump") else item for item in value]
     return value
 
 
-def probe_to_promptfoo_test(probe: ProbeCase) -> dict[str, Any]:
-    vars_payload: dict[str, Any]
-    if probe.input_format == "conversation":
-        vars_payload = {"messages": _serialize_probe_input(probe.input)}
-    elif probe.input_format == "dict":
-        vars_payload = dict(_serialize_probe_input(probe.input))
-    else:
-        vars_payload = {"query": probe.input}
-
-    return {
-        "description": f"[{probe.probe_type}] {probe.probe_id} — {probe.expected_behavior}",
-        "vars": vars_payload,
-        "assert": [
-            {
-                "type": promptfoo_assertion_type(probe.expected_behavior_type),
-                "value": probe.rubric or probe.expected_behavior,
-            }
-        ],
-    }
-
-
 class PromptfooReader:
-    def fetch_examples(self, config_path: str | Path) -> list[EvalCase]:
+    def fetch_examples(self, config_path: str | Path) -> list[EvalCaseSnapshot]:
         path = Path(config_path)
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         tests = payload.get("tests", [])
         dataset_name = path.stem
-        examples: list[EvalCase] = []
+        examples: list[EvalCaseSnapshot] = []
         for index, test in enumerate(tests):
             vars_payload = test.get("vars", {})
             input_raw = vars_payload.get("messages") or vars_payload.get("query") or vars_payload
             assertions = test.get("assert", [])
-            first_assertion = assertions[0] if assertions else {}
+            native_assertions = []
+            for assertion_index, assertion in enumerate(assertions):
+                assertion_type = assertion.get("type")
+                native_assertions.append(
+                    NativeAssertion.model_validate(
+                        {
+                            "assertion_id": f"{test.get('id', f'{dataset_name}:{index}')}:{assertion_index}",
+                            "assertion_kind": _promptfoo_assertion_kind(assertion_type),
+                            "operator": assertion_type,
+                            "expected_value": assertion.get("value") if assertion_type != "llm-rubric" else None,
+                            "rubric": assertion.get("value") if assertion_type == "llm-rubric" else None,
+                            "metadata": {"raw_assertion": assertion},
+                        }
+                    )
+                )
+            method_kind = "unknown"
+            kinds = {assertion.assertion_kind for assertion in native_assertions}
+            if "judge" in kinds and "deterministic" in kinds:
+                method_kind = "hybrid"
+            elif "judge" in kinds:
+                method_kind = "judge"
+            elif "deterministic" in kinds:
+                method_kind = "deterministic"
             examples.append(
-                EvalCase.model_validate(
+                EvalCaseSnapshot.model_validate(
                     {
-                        "id": test.get("id", f"{dataset_name}:{index}"),
+                        "case_id": test.get("id", f"{dataset_name}:{index}"),
                         "source_platform": "promptfoo",
-                        "source_dataset_id": str(path),
-                        "source_dataset_name": dataset_name,
-                        "input_raw": input_raw,
-                        "input_normalized": normalize_input(input_raw),
-                        "expected_output": flatten_expected_output(first_assertion.get("value")),
-                        "rubric": first_assertion.get("value") if first_assertion.get("type") == "llm-rubric" else None,
-                        "assertion_type": first_assertion.get("type"),
-                        "metadata": {"description": test.get("description")},
-                        "tags": [],
+                        "source_target_id": str(path),
+                        "source_target_name": dataset_name,
+                        "target_locator": str(path),
+                        "method_kind": method_kind,
+                        "native_case": test,
+                        "native_input": input_raw,
+                        "native_output": {"assert": assertions},
+                        "native_assertions": native_assertions,
+                        "metadata": {
+                            "description": test.get("description"),
+                            "metadata": test.get("metadata", {}),
+                        },
+                        "tags": list((test.get("metadata") or {}).get("tags", [])),
+                        "method_hints": ["promptfoo_config"],
+                        "method_confidence": 0.8 if assertions else 0.2,
                     }
                 )
             )
         return examples
 
+    def discover_evaluator_bindings(self, config_path: str | Path) -> list[EvaluatorBindingCandidate]:
+        path = Path(config_path)
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        tests = payload.get("tests", [])
+        candidates: dict[str, EvaluatorBindingCandidate] = {}
+
+        for index, test in enumerate(tests):
+            assertions = test.get("assert", [])
+            for assertion_index, assertion in enumerate(assertions):
+                assertion_type = assertion.get("type")
+                if assertion_type != "llm-rubric":
+                    continue
+                binding_id = "promptfoo::llm-rubric"
+                location = f"{path}:{index}:{assertion_index}"
+                existing = candidates.get(binding_id)
+                candidate = EvaluatorBindingCandidate.model_validate(
+                    {
+                        "binding_id": binding_id,
+                        "label": "Promptfoo llm-rubric assertion",
+                        "scope": "row_local",
+                        "execution_surface": "config_file",
+                        "source": "promptfoo_config",
+                        "discovery_mode": "formal",
+                        "binding_object_id": location,
+                        "binding_location": location,
+                        "binding_status": "row_local",
+                        "verification_status": "verified",
+                        "mapping_hints": {},
+                        "reusable": True,
+                        "confidence": 0.99,
+                        "notes": ["Recovered directly from the Promptfoo assert block."],
+                    }
+                )
+                if existing is None:
+                    candidates[binding_id] = candidate
+                else:
+                    existing.notes = list(dict.fromkeys([*existing.notes, *candidate.notes]))
+        return list(candidates.values())
+
+    def read_evaluator_binding(self, config_path: str | Path, binding_id: str) -> dict[str, Any]:
+        candidates = self.discover_evaluator_bindings(config_path)
+        for candidate in candidates:
+            if candidate.binding_id == binding_id:
+                return candidate.model_dump(mode="json")
+        raise KeyError(f"Unknown Promptfoo evaluator binding: {binding_id}")
+
+    def verify_evaluator_binding(self, config_path: str | Path, binding_id: str) -> dict[str, Any]:
+        path = Path(config_path)
+        exists = any(candidate.binding_id == binding_id for candidate in self.discover_evaluator_bindings(path))
+        return {
+            "platform": "promptfoo",
+            "binding_id": binding_id,
+            "verified": exists,
+            "verification_status": "verified" if exists else "unverified",
+            "binding_location": str(path),
+        }
+
 
 class PromptfooWriter:
-    def write_tests(
+    def write_renderings(
         self,
-        probes: list[ProbeCase],
+        renderings: list[NativeEvalRendering],
         *,
         test_file: str | Path,
         artifact_path: str | None = None,
@@ -109,9 +158,12 @@ class PromptfooWriter:
             payload = {}
 
         tests = payload.get("tests", [])
-        tests.extend([probe_to_promptfoo_test(probe) for probe in probes])
+        for rendering in renderings:
+            if rendering.rendering_kind != "promptfoo_test":
+                continue
+            tests.append(rendering.payload)
         payload["description"] = (
-            f"Parity probes for {artifact_path or 'artifacts'}"
+            f"Parity evals for {artifact_path or 'artifacts'}"
             + (f" (PR #{pr_number})" if pr_number is not None else "")
         )
         payload["tests"] = tests
@@ -119,10 +171,26 @@ class PromptfooWriter:
         path.write_text(header + yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
         outputs = {"test_file": path}
-        if any(probe.input_format == "conversation" for probe in probes):
+        if any(
+            isinstance(rendering.payload.get("vars", {}).get("messages"), list)
+            for rendering in renderings
+            if rendering.rendering_kind == "promptfoo_test"
+        ):
             prompt_dir = path.parent / "prompts"
             prompt_dir.mkdir(parents=True, exist_ok=True)
             prompt_path = prompt_dir / "conversational_probe_prompt.json"
-            prompt_path.write_text(CONVERSATIONAL_PROMPT_TEMPLATE, encoding="utf-8")
+            prompt_path.write_text("[]\n", encoding="utf-8")
             outputs["prompt_file"] = prompt_path
         return outputs
+
+
+def rendering_to_promptfoo_test(rendering: NativeEvalRendering) -> dict[str, Any]:
+    if rendering.rendering_kind != "promptfoo_test":
+        raise ValueError("Expected a promptfoo_test rendering")
+    payload = dict(rendering.payload)
+    vars_payload = payload.get("vars")
+    if isinstance(vars_payload, dict):
+        payload["vars"] = {
+            key: _serialize_rendering_input(value) for key, value in vars_payload.items()
+        }
+    return payload
