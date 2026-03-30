@@ -82,7 +82,7 @@ jobs:
             echo "::notice::Gate CLOSED — no behavioral artifact changes, skipping Stage 2 & 3"
           fi
 
-      - name: Stage 2 - Coverage Analysis
+      - name: Stage 2 - Eval Analysis
         id: stage2
         if: steps.gate.outputs.has_changes == 'true'
         run: |
@@ -111,14 +111,14 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
 
-      - name: Stage 3 - Probe Generation
+      - name: Stage 3 - Native Eval Synthesis
         id: stage3
         if: steps.gate.outputs.has_changes == 'true'
         run: |
-          echo "::group::Stage 3 — Probe Generation (agent running)"
+          echo "::group::Stage 3 — Native Eval Synthesis (agent running)"
           parity run-stage 3 \
             --manifest .parity/stage1.json \
-            --gaps .parity/stage2.json \
+            --analysis .parity/stage2.json \
             --output .parity/stage3.json
           echo "::endgroup::"
           if [ -f .parity/metadata.json ]; then
@@ -128,11 +128,11 @@ jobs:
               m = json.load(open(".parity/metadata.json"))
               s3 = json.load(open(".parity/stage3.json")) if __import__("pathlib").Path(".parity/stage3.json").exists() else {}
               cost = f"${m['cost_usd']:.4f}" if m.get("cost_usd") is not None else "n/a"
-              probes = s3.get("probe_count", "n/a")
+              intents = s3.get("intent_count", "n/a")
               print(
                   f"::notice::Stage 3 — model={m.get('model','n/a')} "
                   f"cost={cost} duration={m.get('duration_ms','n/a')}ms "
-                  f"turns={m.get('num_turns','n/a')} probes_generated={probes}"
+                  f"turns={m.get('num_turns','n/a')} intents_generated={intents}"
               )
           except Exception as e:
               print(f"::warning::Could not read Stage 3 metadata: {e}")
@@ -158,7 +158,7 @@ jobs:
           sha = "${{ github.event.pull_request.head.sha }}"[:7]
           artifacts = len(s1.get("hint_matched_artifacts", []))
           has_changes = s1.get("has_changes", False)
-          probes = s3.get("probe_count", 0) if has_changes else 0
+          intents = s3.get("intent_count", 0) if has_changes else 0
 
           lines = [
               "## Parity Run Summary",
@@ -168,7 +168,7 @@ jobs:
               f"| PR | #{pr} |",
               f"| SHA | `{sha}` |",
               f"| Behavioral artifacts changed | {artifacts} |",
-              f"| Probes generated | {probes} |",
+              f"| Intents generated | {intents} |",
           ]
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -215,7 +215,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Post PR comment (probes)
+      - name: Post PR comment (evals proposed)
         if: needs.parity-analyze.outputs.has_changes == 'true'
         run: |
           parity post-comment \
@@ -258,7 +258,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download probe proposal
+      - name: Download eval proposal
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -266,11 +266,11 @@ jobs:
           name: parity-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           path: .parity/
 
-      - name: Write probes to LangSmith
+      - name: Write evals to platform
         id: write
         continue-on-error: true
         run: |
-          parity write-probes \
+          parity write-evals \
             --proposal .parity/stage3.json \
             --config parity.yaml \
             --outcome-output .parity/write-outcome.json \

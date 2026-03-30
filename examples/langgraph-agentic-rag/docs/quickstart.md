@@ -5,8 +5,8 @@ This quickstart walks you through a complete Parity workflow using a real LangGr
 1. A working agentic RAG app running locally
 2. A seeded LangSmith baseline eval dataset
 3. A PR that introduces a single prompt addition with a non-obvious risk
-4. Parity's Stage 1–3 artifacts: detected changes, coverage gaps, and proposed probes
-5. Probes written back to LangSmith after merge approval
+4. Parity's Stage 1–3 artifacts: detected changes, coverage gaps, and proposed evals
+5. Evals written back to LangSmith after merge approval
 
 The LangGraph app is a close implementation of the [LangGraph agentic RAG reference pattern](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_agentic_rag/): an agent that retrieves from Lilian Weng's ML research blog posts, grades document relevance, rewrites queries when retrieval misses, and generates grounded answers.
 
@@ -42,7 +42,7 @@ The change sounds entirely reasonable — citations improve transparency. The no
 - Git and the `gh` CLI
 - An OpenAI API key — the app uses `gpt-4.1` for all LLM calls and OpenAI embeddings for the vector store
 - An Anthropic API key — Parity uses Claude for Stages 1, 2, and 3
-- A LangSmith account and API key — used for the baseline eval dataset and probe writeback
+- A LangSmith account and API key — used for the baseline eval dataset and eval writeback
 
 ---
 
@@ -108,7 +108,7 @@ These two queries are specifically chosen because the demo patch creates regress
 
 ## Step 4: Seed the baseline eval dataset in LangSmith
 
-The demo expects a LangSmith dataset named `lilian-weng-rag-baseline`. This is already referenced in `parity.yaml` under `mappings`. Without it, Stage 2 cannot run in coverage-aware mode and will fall back to starter mode.
+The demo expects a LangSmith dataset named `lilian-weng-rag-baseline`. This is already referenced in `parity.yaml` under `evals.rules`. Without it, Stage 2 may still run, but it is more likely to fall back to bootstrap discovery instead of resolving the intended target directly.
 
 Seed the dataset:
 
@@ -139,13 +139,13 @@ In your GitHub repo, go to **Settings → Secrets and variables → Actions** an
 | Secret | Required for |
 |---|---|
 | `ANTHROPIC_API_KEY` | Stages 1, 2, and 3 |
-| `OPENAI_API_KEY` | Stage 2 coverage-aware mode (`embed-batch` compares probe candidates against the LangSmith dataset using OpenAI embeddings) |
+| `OPENAI_API_KEY` | Stage 2 eval analysis (`embed-batch` compares candidate eval inputs against the LangSmith dataset using OpenAI embeddings) |
 | `LANGSMITH_API_KEY` | Stage 2 dataset query and deterministic writeback |
 
 Then create the approval label:
 
 ```bash
-gh label create "parity:approve" --color 0075ca --description "Approve Parity probe writeback"
+gh label create "parity:approve" --color 0075ca --description "Approve Parity eval writeback"
 ```
 
 Or go to **Issues → Labels → New label** and create a label named exactly `parity:approve`. Parity's merge-time workflow (`parity-write` job) only fires when a PR is merged with this label. GitHub does not create unknown labels automatically.
@@ -218,7 +218,7 @@ The change is individually plausible. The risk — that the retriever passes onl
 
 When the `parity-analyze` workflow completes (~2–4 minutes), look for:
 
-- A PR comment from Parity listing proposed probes
+- A PR comment from Parity listing proposed evals
 - The uploaded workflow artifact containing `.parity/stage1.json`, `.parity/stage2.json`, and `.parity/stage3.json`
 
 Compare your output against the reference examples in [`expected_outputs/`](../expected_outputs/). The exact wording will differ, but the structure should match:
@@ -250,12 +250,12 @@ The `parity-write` job will:
 1. Identify the earlier `parity-analyze` run for the PR head SHA using `parity resolve-run-id`
 2. Download the matching `.parity` artifact from that run
 3. Check out the merged repo so `parity.yaml` is available
-4. Write the approved probes to `lilian-weng-rag-baseline` in LangSmith
+4. Write the approved evals to `lilian-weng-rag-baseline` in LangSmith
 5. Post a merged-PR result comment summarizing the writeback outcome
 
 ---
 
-## Step 10: Confirm probes were written to LangSmith
+## Step 10: Confirm evals were written to LangSmith
 
 Go to [smith.langchain.com](https://smith.langchain.com), open the `lilian-weng-rag-baseline` dataset, and confirm you see new examples added by Parity.
 
@@ -264,9 +264,9 @@ Each written example will include metadata such as:
 ```json
 {
   "generated_by": "parity",
-  "probe_type": "boundary_probe",
-  "probe_id": "probe_001",
-  "source_pr": "1"
+  "intent_type": "boundary_probe",
+  "rendering_id": "render-intent_002",
+  "source_pr": 1
 }
 ```
 
@@ -275,7 +275,7 @@ Each written example will include metadata such as:
 ## What this demo pressure-tests
 
 - **Non-obvious prompt risk**: the citation instruction looks correct in isolation; the risk only becomes visible when you trace what the retriever actually passes to the generator
-- **Coverage-aware mode**: Stage 2 has a real baseline to compare against and identifies specific gaps rather than generating from scratch
+- **Coverage-aware analysis**: Stage 2 has a real baseline to compare against and identifies specific gaps rather than generating from scratch
 - **Python constant detection**: prompts are inline strings in `app/graph.py`, not `.md` files — Parity finds them via `python_patterns: ["*_PROMPT"]`
 - **Cross-post attribution cases**: the three blog posts share vocabulary, so citation accuracy depends on the model correctly inferring source identity from raw chunk text
 - **End-to-end artifact handoff**: the merge-time job downloads the exact artifact from the PR analysis run, not a recomputed version
@@ -287,10 +287,10 @@ Each written example will include metadata such as:
 - **Change `REWRITE_PROMPT`** to over-index on the most recent question in a multi-turn conversation — Stage 1 will detect it as a query-rewriting behavior change
 - **Remove the `grade_documents` structured output schema** (`GradeDocuments`) and replace with free-text reasoning — Stage 1 will flag the classifier schema removal
 - **Add a fourth blog post URL** to `app/graph.py` and update `GENERATE_PROMPT` to reference it — Stage 1 will detect a compound change in both retrieval scope and generation behavior
-- **Revert the patch after writing probes**, then open a new PR with the same patch — Stage 2 will now find the previously written probes as existing coverage and should propose fewer or more precisely targeted probes, demonstrating the feedback loop
+- **Revert the patch after writing evals**, then open a new PR with the same patch — Stage 2 will now find the previously written evals as existing coverage and should propose fewer or more precisely targeted evals, demonstrating the feedback loop
 
 ---
 
 ## Why this example works better than a hello-world app
 
-A single-prompt hello-world app produces one behavioral change and one obvious probe. The point of this demo is different: a small, individually plausible prompt change should create realistic eval gaps that are genuinely hard to notice without tooling. This app is just complex enough to make that visible — three blog posts, four graph nodes, three prompt constants — without adding setup drag.
+A single-prompt hello-world app produces one behavioral change and one obvious eval. The point of this demo is different: a small, individually plausible prompt change should create realistic eval gaps that are genuinely hard to notice without tooling. This app is just complex enough to make that visible — three blog posts, four graph nodes, three prompt constants — without adding setup drag.
