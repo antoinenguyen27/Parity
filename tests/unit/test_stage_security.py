@@ -1,78 +1,167 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
-from parity.stages.security import build_stage1_can_use_tool, build_stage1_options, build_stage3_options
+from claude_agent_sdk import Transport, query
+from claude_agent_sdk.types import ResultMessage
+
+from parity.stages.security import build_stage1_options, build_stage3_options, evaluate_stage1_tool_request
+
+
+class FakeTransport(Transport):
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._ready = False
+
+    async def connect(self) -> None:
+        self._ready = True
+
+    async def write(self, data: str) -> None:
+        message = json.loads(data)
+        if message.get("type") == "control_request":
+            await self._queue.put(
+                {
+                    "type": "control_response",
+                    "response": {
+                        "subtype": "success",
+                        "request_id": message["request_id"],
+                        "response": {},
+                    },
+                }
+            )
+        elif message.get("type") == "user":
+            await self._queue.put(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "duration_ms": 0,
+                    "duration_api_ms": 0,
+                    "is_error": False,
+                    "num_turns": 0,
+                    "session_id": "test-session",
+                    "stop_reason": "end_turn",
+                    "total_cost_usd": 0.0,
+                    "usage": {},
+                    "result": "{}",
+                    "structured_output": {},
+                }
+            )
+
+    async def close(self) -> None:
+        self._ready = False
+        await self._queue.put(None)
+
+    def is_ready(self) -> bool:
+        return self._ready
+
+    async def end_input(self) -> None:
+        await self._queue.put(None)
+
+    async def _iter_messages(self):
+        while True:
+            message = await self._queue.get()
+            if message is None:
+                break
+            yield message
+
+    def read_messages(self):
+        return self._iter_messages()
 
 
 def test_stage1_policy_allows_read_only_git_commands(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
-
-    result = asyncio.run(policy("Bash", {"command": "git show origin/main:app/router.py"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Bash",
+        tool_input={"command": "git show origin/main:app/router.py"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "allow"
 
-    result = asyncio.run(
-        policy("Bash", {"command": "git diff --unified=5 origin/main...HEAD -- app/router.py"}, None)  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Bash",
+        tool_input={"command": "git diff --unified=5 origin/main...HEAD -- app/router.py"},
+        repo_root=tmp_path,
     )
     assert result.behavior == "allow"
 
 
 def test_stage1_policy_denies_broad_shell_commands(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
-
-    result = asyncio.run(policy("Bash", {"command": "env"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Bash",
+        tool_input={"command": "env"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "deny"
 
-    result = asyncio.run(policy("Bash", {"command": "git show origin/main:app/router.py | cat"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Bash",
+        tool_input={"command": "git show origin/main:app/router.py | cat"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "deny"
 
 
 def test_stage1_policy_denies_sensitive_git_inspection_paths(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
-
-    result = asyncio.run(policy("Bash", {"command": "git show origin/main:.env"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Bash",
+        tool_input={"command": "git show origin/main:.env"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "deny"
 
 
 def test_stage1_policy_denies_sensitive_file_reads(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
     (tmp_path / ".env").write_text("SECRET=1", encoding="utf-8")
 
-    result = asyncio.run(policy("Read", {"file_path": ".env"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Read",
+        tool_input={"file_path": ".env"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "deny"
 
 
 def test_stage1_policy_allows_repo_file_reads(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
     path = tmp_path / "app" / "router.py"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("ROUTER = 'ok'", encoding="utf-8")
 
-    result = asyncio.run(policy("Read", {"file_path": "app/router.py"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Read",
+        tool_input={"file_path": "app/router.py"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "allow"
 
 
 def test_stage1_policy_allows_non_secret_env_templates(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
     path = tmp_path / ".env.example"
     path.write_text("OPENAI_API_KEY=", encoding="utf-8")
 
-    result = asyncio.run(policy("Read", {"file_path": ".env.example"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Read",
+        tool_input={"file_path": ".env.example"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "allow"
 
 
 def test_stage1_policy_allows_absolute_glob_paths_within_repo(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
-
-    result = asyncio.run(policy("Glob", {"path": str(tmp_path), "pattern": "**/*.py"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Glob",
+        tool_input={"path": str(tmp_path), "pattern": "**/*.py"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "allow"
 
 
 def test_stage1_policy_denies_paths_outside_repo(tmp_path: Path) -> None:
-    policy = build_stage1_can_use_tool(tmp_path)
-
-    result = asyncio.run(policy("Read", {"file_path": "../outside.txt"}, None))  # type: ignore[arg-type]
+    result = evaluate_stage1_tool_request(
+        tool_name="Read",
+        tool_input={"file_path": "../outside.txt"},
+        repo_root=tmp_path,
+    )
     assert result.behavior == "deny"
 
 
@@ -85,7 +174,29 @@ def test_stage1_options_use_narrow_tool_set(tmp_path: Path) -> None:
     )
 
     assert options.tools == ["Read", "Glob", "Bash"]
-    assert options.can_use_tool is not None
+    assert options.can_use_tool is None
+    assert options.hooks is not None
+    assert "PreToolUse" in options.hooks
+
+
+def test_stage1_options_support_string_prompt_queries(tmp_path: Path) -> None:
+    options = build_stage1_options(
+        cwd=tmp_path,
+        max_turns=20,
+        max_budget_usd=0.5,
+        output_schema={"type": "object", "properties": {}},
+    )
+    transport = FakeTransport()
+
+    async def run_query() -> list[ResultMessage]:
+        messages: list[ResultMessage] = []
+        async for message in query(prompt="hello", options=options, transport=transport):
+            if isinstance(message, ResultMessage):
+                messages.append(message)
+        return messages
+
+    results = asyncio.run(run_query())
+    assert len(results) == 1
 
 
 def test_stage3_options_disable_builtin_tools(tmp_path: Path) -> None:
