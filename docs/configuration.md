@@ -4,6 +4,66 @@
 
 If a setting does not reliably change product behavior, it should not be in this file.
 
+## Mental Model
+
+Most teams only need to answer four questions:
+
+1. Which files are likely to contain behavior-defining changes?
+2. Where should Parity read product context from?
+3. Which eval platforms and targets is Parity allowed to discover and write to?
+4. How strict should Parity be about writeback and budget?
+
+Everything in `parity.yaml` exists to support one of those decisions.
+
+## Start Small
+
+A practical first setup usually means:
+
+- add `behavior_artifacts` for your prompts, agents, and guardrails
+- point `context` at the core markdown files Parity should read
+- declare only the platforms you actually use
+- set one or two `evals.rules` entries for important artifacts
+- keep `evals.write.require_native_rendering: true`
+- set `spend.analysis_total_spend_cap_usd`
+
+Most other settings are for tightening discovery, reuse, or writeback once the basic path is already working.
+
+## Minimum Viable Config
+
+This is the smallest useful shape for a repo that wants to run Parity locally and iterate from there:
+
+```yaml
+version: 2
+
+behavior_artifacts:
+  paths:
+    - "prompts/**"
+    - "app/**"
+
+context:
+  product: "context/product.md"
+  users: "context/users.md"
+  interactions: "context/interactions.md"
+  good_examples: "context/good_examples.md"
+  bad_examples: "context/bad_examples.md"
+  traces_dir: "context/traces/"
+
+platforms:
+  langsmith:
+    api_key_env: LANGSMITH_API_KEY
+
+evals:
+  rules:
+    - artifact: "app/graph.py"
+      preferred_platform: langsmith
+      preferred_target: "my-existing-dataset"
+
+spend:
+  analysis_total_spend_cap_usd: 2.50
+```
+
+If you are not using a hosted platform yet, you can omit `platforms` and `evals.rules`, but Stage 2 is more likely to fall back to bootstrap mode.
+
 ## Prerequisites
 
 - Python 3.11+
@@ -36,7 +96,7 @@ Controls where Parity reads product context:
 - `traces_dir`
 - `trace_max_samples`
 
-Parity works without a complete context pack, but quality drops quickly.
+Parity works without a complete context pack, but quality drops quickly. If you only fill in a few files, start with `product`, `users`, and `interactions`.
 
 ## `platforms`
 
@@ -47,7 +107,7 @@ Declares the integrations available in this repo:
 - `arize_phoenix`
 - `promptfoo`
 
-Platform config only declares credentials and target defaults. It does not hardcode synthesis decisions.
+Platform config only declares credentials and target defaults. It does not hardcode synthesis decisions. If a platform is not declared, Parity will not treat it as part of the supported path for that repo.
 
 ## `evals.discovery`
 
@@ -73,6 +133,8 @@ Rules let you express strong hints for a changed artifact:
 - `repo_asset_hints`
 
 Rules are hints and constraints. If a preferred target is stale or unrelated, Stage 2 can recover to a better target on the same platform.
+
+For most teams, `evals.rules` is the highest-leverage part of the config because it tells Parity where to start looking for the right native target.
 
 ## `evals.write`
 

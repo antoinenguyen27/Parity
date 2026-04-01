@@ -1,12 +1,29 @@
+![Parity banner](assets/Parity%20Banner.png)
+
 # Parity
 
 [![PyPI](https://img.shields.io/pypi/v/parity-ai)](https://pypi.org/project/parity-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 
+> *Parity is early. We’re moving fast, so you may hit a few rough edges while we keep improving the product.*
+
 Parity analyzes behavior-defining AI changes in pull requests, discovers the most relevant existing eval target, validates the real coverage gaps, and proposes native eval additions that fit the target suite.
 
 Parity is not an eval runner. It does not create or mutate hosted evaluator infrastructure. It reuses the eval system you already have.
+
+## How Parity Works
+
+The normal developer loop is:
+
+1. Run `parity init` once in your repo.
+2. Point Parity at your behavior-defining files, context, and eval platforms in `parity.yaml`.
+3. Open a PR that changes prompts, instructions, guardrails, judges, or related behavior.
+4. Let Parity analyze the PR and propose native eval additions against the best matching existing target.
+5. Review the proposal in the PR.
+6. Merge with the `parity:approve` label if you want approved `native_ready` evals written back after merge.
+
+If no safe native target is found, Parity falls back to bootstrap mode and proposes starter evals without unsafe writeback.
 
 ## What Parity Does
 
@@ -51,6 +68,14 @@ pip install parity-ai
 parity init
 ```
 
+`parity init` creates the scaffold:
+
+- `parity.yaml`
+- `.github/workflows/parity.yml`
+- `context/` stub files
+
+It does not fill in your API keys, product context, or eval target mappings for you.
+
 Then:
 
 1. Fill in the generated `context/` files.
@@ -59,13 +84,44 @@ Then:
 4. Open a PR that changes AI behavior.
 5. Add the fixed approval label `parity:approve` before merging if you want Parity to write approved evals back after merge.
 
+For a quick setup check, run:
+
+```bash
+parity doctor
+```
+
+## Bare Minimum Local Run
+
+If you want to step through the stages locally before wiring up the full PR workflow, this is the minimum practical path:
+
+1. Run `parity init`.
+2. Fill in at least `context/product.md`, `context/users.md`, and `context/interactions.md`.
+3. Set `ANTHROPIC_API_KEY`.
+4. Set `OPENAI_API_KEY` if you want normal coverage-aware Stage 2 analysis.
+5. Add one or two `evals.rules` entries or declare a platform Parity can discover from.
+6. Run `parity doctor`.
+7. Run `parity run-stage 1`, `parity run-stage 2`, and `parity run-stage 3` manually.
+
+The GitHub Actions workflow is not required for local stage-by-stage runs. It is only required for automated PR analysis and merge-time writeback.
+
 ## Docs
 
-- [Configuration](docs/configuration.md)
-- [Architecture](docs/spec.md)
-- [Platform support](docs/platforms.md)
-- [Example quickstart](examples/langgraph-agentic-rag/docs/quickstart.md)
-- [Maintainer guide](docs/maintainers.md)
+Start here:
+
+- [Configuration](docs/configuration.md) — what goes in `parity.yaml`, what matters most, and how to think about the config surface
+- [Platform support](docs/platforms.md) — which integrations are strongest today and where Parity stays conservative
+
+Understand the product:
+
+- [Architecture](docs/spec.md) — the stage model, runtime flow, and product contract
+
+See a full worked example:
+
+- [LangGraph example quickstart](examples/langgraph-agentic-rag/docs/quickstart.md) — an end-to-end demo repo that shows the full PR-to-writeback flow with LangSmith
+
+Maintaining Parity itself:
+
+- [Maintainer guide](docs/maintainers.md) — local development, testing, packaging, and public-surface rules for this repo
 
 ## License
 

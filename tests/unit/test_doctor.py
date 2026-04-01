@@ -64,7 +64,8 @@ class TestDoctorCommand:
         runner = CliRunner()
         result = runner.invoke(doctor_command, ["--config", str(config_path)])
         assert result.exit_code == 0
-        # e.g. "3/5 checks passed."
+        assert "Ready for Stage 1 local runs" in result.output
+        assert "Ready for coverage-aware Stage 2/3 local runs" in result.output
         assert "checks passed" in result.output
 
     def test_no_hint_patterns_reports_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -10,6 +10,8 @@ This quickstart walks you through a complete Parity workflow using a real LangGr
 
 The LangGraph app is a close implementation of the [LangGraph agentic RAG reference pattern](https://langchain-ai.github.io/langgraph/tutorials/rag/langgraph_agentic_rag/): an agent that retrieves from Lilian Weng's ML research blog posts, grades document relevance, rewrites queries when retrieval misses, and generates grounded answers.
 
+This is a full worked demo, not the minimum setup path. If you only want to get Parity running and step through Stages 1-3 locally, start with the root [README](../../../README.md) and come back here when you want to see the full PR-to-writeback flow.
+
 ---
 
 ## How this demo is structured

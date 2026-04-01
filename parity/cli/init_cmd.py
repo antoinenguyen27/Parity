@@ -704,7 +704,9 @@ def init_command(context_only: bool, dry_run: bool) -> None:
             _create_context_stubs(root, dry_run=dry_run)
 
         click.echo("")
-        click.echo("Setup complete. Next steps:")
+        click.echo("Scaffold created. Parity is not fully runnable yet until you add API keys and fill in the context files.")
+        click.echo("")
+        click.echo("Next steps:")
         steps: list[str] = []
         if create_context:
             steps.append("Fill in context/ files with product details and known failure modes.")

@@ -32,6 +32,8 @@ def doctor_command(config_path: Path, ci: bool) -> None:
     """Verify your Parity setup and report any issues."""
     checks: list[tuple[bool, str]] = []
     root = Path.cwd()
+    stage1_ready = False
+    stage23_ready = False
 
     # Check 1: parity.yaml exists
     config_exists = config_path.exists()
@@ -120,9 +122,33 @@ def doctor_command(config_path: Path, ci: bool) -> None:
             else:
                 checks.append((False, "GITHUB_TOKEN or GITHUB_REPOSITORY not set — skipping label check"))
 
+        key_context_files = [
+            root / config.context.product,
+            root / config.context.users,
+            root / config.context.interactions,
+        ]
+        stage1_ready = (
+            config_exists
+            and bool(anthropic_key)
+            and all(path.exists() and path.stat().st_size > 0 for path in key_context_files)
+        )
+        stage23_ready = stage1_ready and bool(os.environ.get("OPENAI_API_KEY", "")) and (
+            bool(config.evals.rules)
+            or any((
+                config.platforms.langsmith,
+                config.platforms.braintrust,
+                config.platforms.arize_phoenix,
+                config.platforms.promptfoo,
+            ))
+        )
+
     click.echo(_format_checks(checks))
     passed = sum(1 for ok, _ in checks if ok)
     total = len(checks)
+    click.echo("")
+    click.echo("Readiness:")
+    click.echo(f"  {'✓' if stage1_ready else '✗'} Ready for Stage 1 local runs")
+    click.echo(f"  {'✓' if stage23_ready else '✗'} Ready for coverage-aware Stage 2/3 local runs")
     click.echo(f"\n{passed}/{total} checks passed.")
 
 
