@@ -8,7 +8,12 @@ from pathlib import Path
 
 from parity.config import ParityConfig, ResolvedSpendCaps
 from parity.context import count_tokens
-from parity.models import EvalAnalysisManifest, EvalIntentCandidateBundle, EvalProposalManifest
+from parity.models import (
+    EvalAnalysisManifest,
+    EvalIntentCandidateBundle,
+    EvalProposalManifest,
+    normalize_behavior_change_manifest_payload,
+)
 from parity.prompts.stage3_template import (
     compute_stage3_input_context_limit_tokens,
     render_stage3_prompt,
@@ -46,6 +51,7 @@ def run_stage3(
     cwd: str | Path | None = None,
     resolved_spend: ResolvedSpendCaps | None = None,
 ) -> StageRunResult:
+    stage1_manifest = normalize_behavior_change_manifest_payload(stage1_manifest)
     run_id = f"stage3-{int(time.time())}"
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     resolved_spend = resolved_spend or config.resolve_spend_caps()

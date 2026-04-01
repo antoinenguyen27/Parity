@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from parity.config import ParityConfig
+from parity.errors import EmbeddingError
+from parity.stages import stage2_mcp
 from parity.stages.stage2_mcp import Stage2Toolbox, build_stage2_mcp_server
 
 
@@ -110,7 +114,46 @@ def test_stage2_toolbox_blocks_embedding_request_when_spend_cap_would_be_exceede
     assert payload["budget_exceeded"] is True
     assert payload["count"] == 0
     assert payload["missing_ids"] == ["case_1"]
-    assert toolbox.build_runtime_metadata()["embedding"]["blocked_request_count"] == 1
+    embedding_metadata = toolbox.build_runtime_metadata()["embedding"]
+    assert embedding_metadata["blocked_request_count"] == 1
+    assert embedding_metadata["last_request"]["status"] == "blocked_budget"
+    assert embedding_metadata["last_failure"]["category"] == "budget_exceeded"
+
+
+def test_stage2_toolbox_records_embedding_failure_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    toolbox = Stage2Toolbox(config=ParityConfig(), repo_root=tmp_path)
+
+    def fake_execute_planned_embedding_batch(*args, **kwargs):
+        raise EmbeddingError(
+            "Embedding request failed: You exceeded your current quota.",
+            details={
+                "request": {
+                    "model": "text-embedding-3-small",
+                    "dimensions": None,
+                    "input_count": 1,
+                    "input_tokens_estimate": 5,
+                },
+                "failure": {
+                    "category": "quota_or_billing",
+                    "provider": "openai",
+                    "http_status": 429,
+                    "request_id": "req_embed_quota_001",
+                    "summary": "You exceeded your current quota.",
+                    "next_action": "Increase OpenAI quota or billing budget, or wait for quota reset, then retry.",
+                },
+            },
+        )
+
+    monkeypatch.setattr(stage2_mcp, "execute_planned_embedding_batch", fake_execute_planned_embedding_batch)
+
+    with pytest.raises(EmbeddingError):
+        toolbox.embed_batch([{"id": "case_1", "text": "Hello from a new eval case"}])
+
+    embedding_metadata = toolbox.build_runtime_metadata()["embedding"]
+    assert embedding_metadata["failure_count"] == 1
+    assert embedding_metadata["last_request"]["status"] == "failed"
+    assert embedding_metadata["last_failure"]["category"] == "quota_or_billing"
+    assert embedding_metadata["last_failure"]["request_id"] == "req_embed_quota_001"
 
 
 def test_stage2_toolbox_discovers_repo_eval_code_assets(tmp_path: Path) -> None:

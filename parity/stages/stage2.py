@@ -10,14 +10,16 @@ from typing import Any
 
 from parity.config import ParityConfig, ResolvedSpendCaps
 from parity.context import count_tokens
-from parity.errors import BudgetExceededError
+from parity.errors import BudgetExceededError, StageError
 from parity.models import (
+    canonicalize_artifact_path,
     CoverageGap,
     CoverageTargetSummary,
     EvalAnalysisManifest,
     EvalMethodProfile,
     EvalTargetProfile,
     ResolvedEvalTarget,
+    normalize_behavior_change_manifest_payload,
 )
 from parity.prompts.stage2_template import render_stage2_prompt
 from parity.stages._common import StageRunResult, run_stage_with_retry, simplify_schema
@@ -47,6 +49,13 @@ def _dedupe_non_empty(values: list[Any]) -> list[str]:
         if normalized and normalized not in deduped:
             deduped.append(normalized)
     return deduped
+
+
+def _normalized_artifact_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = canonicalize_artifact_path(value)
+    return normalized or None
 
 
 def _normalize_blank_optional_value(value: Any) -> Any:
@@ -111,8 +120,8 @@ def _build_stage2_rule_resolutions(stage1_manifest: dict, config: ParityConfig) 
     resolutions: list[dict[str, Any]] = []
     seen_artifacts: set[str] = set()
     for change in stage1_manifest.get("changes", []):
-        artifact_path = change.get("artifact_path")
-        if not isinstance(artifact_path, str) or not artifact_path or artifact_path in seen_artifacts:
+        artifact_path = _normalized_artifact_path(change.get("artifact_path"))
+        if artifact_path is None or artifact_path in seen_artifacts:
             continue
         seen_artifacts.add(artifact_path)
         rule = config.find_eval_rule(artifact_path)
@@ -152,8 +161,8 @@ def _build_stage2_rule_resolutions(stage1_manifest: dict, config: ParityConfig) 
 def _build_stage2_bootstrap_brief(stage1_manifest: dict) -> dict[str, Any]:
     change_briefs: list[dict[str, Any]] = []
     for change in stage1_manifest.get("changes", []):
-        artifact_path = change.get("artifact_path")
-        if not isinstance(artifact_path, str) or not artifact_path:
+        artifact_path = _normalized_artifact_path(change.get("artifact_path"))
+        if artifact_path is None:
             continue
         risk_flags = _dedupe_non_empty(
             [
@@ -197,7 +206,7 @@ def _build_stage2_bootstrap_brief(stage1_manifest: dict) -> dict[str, Any]:
 
 
 def _build_bootstrap_target(change: dict[str, Any], reason: str) -> ResolvedEvalTarget:
-    artifact_path = change.get("artifact_path", "unknown")
+    artifact_path = _normalized_artifact_path(change.get("artifact_path")) or "unknown"
     target_id = f"bootstrap::{artifact_path}"
     profile = EvalTargetProfile(
         target_id=target_id,
@@ -301,8 +310,9 @@ def _artifact_target_lookup(resolved_targets: list[ResolvedEvalTarget]) -> dict[
     lookup: dict[str, ResolvedEvalTarget] = {}
     for target in resolved_targets:
         for artifact_path in target.profile.artifact_paths:
-            if isinstance(artifact_path, str) and artifact_path and artifact_path not in lookup:
-                lookup[artifact_path] = target
+            normalized_artifact_path = _normalized_artifact_path(artifact_path)
+            if normalized_artifact_path is not None and normalized_artifact_path not in lookup:
+                lookup[normalized_artifact_path] = target
     return lookup
 
 
@@ -390,8 +400,8 @@ def _build_stage2_fallback_gaps(
     overall_risk = stage1_manifest.get("overall_risk") or "medium"
     artifact_lookup = _artifact_target_lookup(resolved_targets or [])
     for change_index, change in enumerate(stage1_manifest.get("changes", []), start=1):
-        artifact_path = change.get("artifact_path")
-        if not isinstance(artifact_path, str) or not artifact_path:
+        artifact_path = _normalized_artifact_path(change.get("artifact_path"))
+        if artifact_path is None:
             continue
         resolved_target = artifact_lookup.get(artifact_path)
         target_id = resolved_target.profile.target_id if resolved_target is not None else f"bootstrap::{artifact_path}"
@@ -456,8 +466,11 @@ def _build_stage2_fallback_coverage(
         sample_count = len(target.samples)
         represented_artifacts.update(
             artifact_path
-            for artifact_path in target.profile.artifact_paths
-            if isinstance(artifact_path, str) and artifact_path
+            for artifact_path in (
+                _normalized_artifact_path(item)
+                for item in target.profile.artifact_paths
+            )
+            if artifact_path is not None
         )
         summaries.append(
             CoverageTargetSummary(
@@ -475,8 +488,8 @@ def _build_stage2_fallback_coverage(
             )
         )
     for change in stage1_manifest.get("changes", []):
-        artifact_path = change.get("artifact_path")
-        if not isinstance(artifact_path, str) or artifact_path in represented_artifacts:
+        artifact_path = _normalized_artifact_path(change.get("artifact_path"))
+        if artifact_path is None or artifact_path in represented_artifacts:
             continue
         summaries.append(
             CoverageTargetSummary(
@@ -555,19 +568,20 @@ def _derive_unresolved_artifacts(
     stage1_manifest: dict,
     resolved_targets: list[ResolvedEvalTarget],
 ) -> list[str]:
-    changed_artifacts = [
-        change.get("artifact_path")
-        for change in stage1_manifest.get("changes", [])
-        if isinstance(change.get("artifact_path"), str)
-    ]
+    changed_artifacts: list[str] = []
+    for change in stage1_manifest.get("changes", []):
+        artifact_path = _normalized_artifact_path(change.get("artifact_path"))
+        if artifact_path is not None:
+            changed_artifacts.append(artifact_path)
     resolved_artifacts: set[str] = set()
     for target in resolved_targets:
         if target.profile.platform == "bootstrap":
             continue
         for artifact_path in target.profile.artifact_paths:
-            if isinstance(artifact_path, str) and artifact_path:
-                resolved_artifacts.add(artifact_path)
-    return [artifact for artifact in changed_artifacts if artifact not in resolved_artifacts]
+            normalized_artifact_path = _normalized_artifact_path(artifact_path)
+            if normalized_artifact_path is not None:
+                resolved_artifacts.add(normalized_artifact_path)
+    return [artifact for artifact in changed_artifacts if artifact is not None and artifact not in resolved_artifacts]
 
 
 def _build_stage2_budget_fallback(
@@ -654,6 +668,7 @@ def run_stage2(
     cwd: str | Path | None = None,
     resolved_spend: ResolvedSpendCaps | None = None,
 ) -> StageRunResult:
+    stage1_manifest = normalize_behavior_change_manifest_payload(stage1_manifest)
     run_id = f"stage2-{int(time.time())}"
     timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     resolved_spend = resolved_spend or config.resolve_spend_caps()
@@ -742,6 +757,14 @@ def run_stage2(
                 "failure_subtype": exc_details.get("subtype"),
             },
         )
+    except StageError as exc:
+        runtime_metadata = stage2_runtime.toolbox.build_runtime_metadata()
+        if isinstance(exc.details, dict):
+            exc.details.setdefault("runtime_metadata", runtime_metadata)
+            diagnostics = exc.details.get("diagnostics")
+            if isinstance(diagnostics, dict):
+                diagnostics.setdefault("stage2_runtime_metadata", runtime_metadata)
+        raise
 
     runtime_metadata = stage2_runtime.toolbox.build_runtime_metadata()
     result.data.runtime_metadata = runtime_metadata

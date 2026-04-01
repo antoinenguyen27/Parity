@@ -19,10 +19,13 @@ from parity.models.eval_case import (
 from parity.models.manifests import (
     BehaviorChange,
     BehaviorChangeManifest,
+    canonicalize_artifact_path,
     ChangedEntity,
     CompoundChange,
     EvidenceSnippet,
+    normalize_behavior_change_manifest_payload,
     ObservableBehaviorDelta,
+    split_artifact_path,
 )
 from parity.models.proposal import (
     EvalIntentCandidateBundle,
@@ -44,6 +47,7 @@ from parity.models.topology import (
 __all__ = [
     "BehaviorChange",
     "BehaviorChangeManifest",
+    "canonicalize_artifact_path",
     "ChangedEntity",
     "ChangedArtifact",
     "CompoundChange",
@@ -72,6 +76,8 @@ __all__ = [
     "ResolvedEvalTarget",
     "EvidenceSnippet",
     "content_sha256",
+    "normalize_behavior_change_manifest_payload",
     "normalize_conversational",
     "normalize_input",
+    "split_artifact_path",
 ]

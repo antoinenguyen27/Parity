@@ -53,8 +53,10 @@ PROCESS:
 7. Infer the intended change for each artifact. Compare against PR description. Flag contradictions.
 8. Identify unintended risks, including guardrail false-negative and false-positive shifts.
 9. For each behavioral artifact, capture compact evidence that will help downstream eval discovery:
+     - `artifact_path` must be the repo-relative file path only (for example `app/graph.py`). Never append symbol selectors like `::GENERATE_PROMPT`.
      - `behavioral_signatures`: exact phrases, field names, policy terms, tool names, classifier labels, schema keys
      - `changed_entities`: named prompts, tools, judges, validators, schemas, routes, classifiers
+     - Put symbol-level anchors, function names, and prompt constants in `changed_entities` or `affected_components`, not in `artifact_path`
      - `observable_delta`: before vs after user-visible behavior
      - `eval_search_hints`: short phrases downstream can use to search existing evals
      - `validation_focus`: likely eval modalities that best catch the change (judge, deterministic, conversation, tool trace, etc.)

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from parity.errors import BudgetExceededError
+from types import SimpleNamespace
+
+import pytest
+
 from parity.config import ParityConfig
+from parity.errors import BudgetExceededError, StageError
 from parity.stages._common import format_tool_summary
+from parity.stages import stage2 as stage2_module
 from parity.stages.stage2 import (
     _build_stage2_output_schema,
     _build_stage2_bootstrap_brief,
@@ -10,6 +15,7 @@ from parity.stages.stage2 import (
     _build_stage2_degraded_reason,
     _build_stage2_rule_resolutions,
     _normalize_stage2_payload,
+    run_stage2,
 )
 
 
@@ -69,6 +75,49 @@ def test_build_stage2_rule_resolutions_marks_unmapped_artifact_unresolved() -> N
     assert resolutions[0]["rule_status"] == "unresolved"
     assert resolutions[0]["preferred_target"] is None
     assert "promptfoo" in resolutions[0]["discovery_order"]
+
+
+def test_build_stage2_rule_resolutions_normalizes_selector_qualified_artifact_paths() -> None:
+    config = ParityConfig.model_validate(
+        {
+            "evals": {
+                "rules": [
+                    {
+                        "artifact": "app/graph.py",
+                        "preferred_platform": "langsmith",
+                        "preferred_target": "lilian-weng-rag-baseline",
+                    }
+                ]
+            }
+        }
+    )
+
+    resolutions = _build_stage2_rule_resolutions(
+        {
+            "changes": [
+                {
+                    "artifact_path": "app/graph.py::GENERATE_PROMPT",
+                    "artifact_class": "behavior_defining",
+                }
+            ]
+        },
+        config,
+    )
+
+    assert resolutions == [
+        {
+            "artifact_path": "app/graph.py",
+            "artifact_class": "behavior_defining",
+            "rule_status": "explicit",
+            "preferred_platform": "langsmith",
+            "preferred_target": "lilian-weng-rag-baseline",
+            "preferred_project": None,
+            "allowed_methods": [],
+            "preferred_methods": [],
+            "repo_asset_hints": [],
+            "discovery_order": ["langsmith", "promptfoo"],
+        }
+    ]
 
 
 def test_build_stage2_bootstrap_brief_dedupes_risk_flags() -> None:
@@ -344,3 +393,41 @@ def test_normalize_stage2_payload_coerces_blank_nullable_dossier_fields_to_none(
     assert dossier["binding_location"] is None
     assert dossier["rationale"] is None
     assert dossier["last_verified_at"] is None
+
+
+def test_run_stage2_attaches_runtime_metadata_to_stage_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    class _FakeToolbox:
+        def build_runtime_metadata(self) -> dict:
+            return {
+                "embedding": {
+                    "failure_count": 1,
+                    "last_failure": {"category": "quota_or_billing"},
+                },
+                "retrieval": {"fetch_request_count": 0},
+            }
+
+    fake_runtime = SimpleNamespace(
+        server=SimpleNamespace(_mcp_server=object()),
+        toolbox=_FakeToolbox(),
+    )
+
+    async def fake_run_stage_with_retry(**kwargs):
+        raise StageError("Embedding request failed", stage=2, details={"diagnostics": {}})
+
+    monkeypatch.setattr(stage2_module, "render_stage2_prompt", lambda *args, **kwargs: "prompt")
+    monkeypatch.setattr(stage2_module, "count_tokens", lambda prompt: 5)
+    monkeypatch.setattr(stage2_module, "build_stage2_mcp_server", lambda **kwargs: fake_runtime)
+    monkeypatch.setattr(stage2_module, "build_stage2_options", lambda **kwargs: SimpleNamespace())
+    monkeypatch.setattr(stage2_module, "run_stage_with_retry", fake_run_stage_with_retry)
+
+    with pytest.raises(StageError) as exc_info:
+        run_stage2({"run_id": "stage1-run", "changes": []}, ParityConfig(), cwd=tmp_path)
+
+    assert exc_info.value.details["runtime_metadata"]["embedding"]["failure_count"] == 1
+    assert (
+        exc_info.value.details["diagnostics"]["stage2_runtime_metadata"]["embedding"]["last_failure"]["category"]
+        == "quota_or_billing"
+    )

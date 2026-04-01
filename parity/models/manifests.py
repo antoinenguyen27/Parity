@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -10,6 +10,82 @@ from parity.models.analysis import EvalAnalysisManifest, CoverageGap, CoverageTa
 
 RiskLevel = Literal["low", "medium", "high"]
 Alignment = Literal["confirmed", "contradicted", "unknown"]
+_ARTIFACT_PATH_SELECTOR_DELIMITER = "::"
+
+
+def split_artifact_path(artifact_path: str) -> tuple[str, str | None]:
+    normalized = artifact_path.strip()
+    if not normalized:
+        return normalized, None
+
+    file_path, separator, selector = normalized.partition(_ARTIFACT_PATH_SELECTOR_DELIMITER)
+    file_path = file_path.strip()
+    selector = selector.strip()
+    if not separator or not file_path or not selector:
+        return normalized, None
+    return file_path, selector
+
+
+def canonicalize_artifact_path(artifact_path: str) -> str:
+    file_path, _ = split_artifact_path(artifact_path)
+    return file_path
+
+
+def qualify_artifact_component(artifact_path: str) -> str | None:
+    file_path, selector = split_artifact_path(artifact_path)
+    if selector is None:
+        return None
+    return f"{file_path}{_ARTIFACT_PATH_SELECTOR_DELIMITER}{selector}"
+
+
+def normalize_behavior_change_manifest_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    raw_changes = payload.get("changes")
+    if isinstance(raw_changes, list):
+        normalized_changes: list[Any] = []
+        for raw_change in raw_changes:
+            if not isinstance(raw_change, dict):
+                normalized_changes.append(raw_change)
+                continue
+
+            change = dict(raw_change)
+            artifact_path = change.get("artifact_path")
+            if isinstance(artifact_path, str):
+                qualified_component = qualify_artifact_component(artifact_path)
+                change["artifact_path"] = canonicalize_artifact_path(artifact_path)
+                raw_affected_components = change.get("affected_components")
+                affected_components = (
+                    list(raw_affected_components)
+                    if isinstance(raw_affected_components, list)
+                    else []
+                )
+                if qualified_component and qualified_component not in affected_components:
+                    affected_components.append(qualified_component)
+                if affected_components:
+                    change["affected_components"] = affected_components
+
+            normalized_changes.append(change)
+        normalized["changes"] = normalized_changes
+
+    raw_compound_changes = payload.get("compound_changes")
+    if isinstance(raw_compound_changes, list):
+        normalized_compound_changes: list[Any] = []
+        for raw_compound_change in raw_compound_changes:
+            if not isinstance(raw_compound_change, dict):
+                normalized_compound_changes.append(raw_compound_change)
+                continue
+
+            compound_change = dict(raw_compound_change)
+            artifact_paths = compound_change.get("artifact_paths")
+            if isinstance(artifact_paths, list):
+                compound_change["artifact_paths"] = [
+                    canonicalize_artifact_path(path) if isinstance(path, str) else path
+                    for path in artifact_paths
+                ]
+            normalized_compound_changes.append(compound_change)
+        normalized["compound_changes"] = normalized_compound_changes
+
+    return normalized
 
 
 class BehaviorChange(ParityModel):
@@ -73,6 +149,13 @@ class BehaviorChangeManifest(ParityModel):
     changes: list[BehaviorChange] = Field(default_factory=list)
     compound_changes: list[CompoundChange] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_artifact_paths(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return normalize_behavior_change_manifest_payload(value)
+        return value
+
     @model_validator(mode="after")
     def ensure_change_gate_consistency(self) -> "BehaviorChangeManifest":
         if self.has_changes and not self.changes:
@@ -89,13 +172,16 @@ __all__ = [
     "Alignment",
     "BehaviorChange",
     "BehaviorChangeManifest",
+    "canonicalize_artifact_path",
     "ChangedEntity",
     "CompoundChange",
     "EvalAnalysisManifest",
     "EvidenceSnippet",
     "ObservableBehaviorDelta",
+    "normalize_behavior_change_manifest_payload",
     "CoverageGap",
     "CoverageTargetSummary",
     "NearestCompatibleCase",
     "RiskLevel",
+    "split_artifact_path",
 ]

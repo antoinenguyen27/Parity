@@ -37,6 +37,7 @@ _IGNORED_DISCOVERY_DIRS = {".git", ".claude", ".parity", ".venv", "__pycache__",
 class Stage2EmbeddingSpendLedger:
     request_count: int = 0
     blocked_request_count: int = 0
+    failure_count: int = 0
     input_count: int = 0
     cached_count: int = 0
     miss_count: int = 0
@@ -44,8 +45,16 @@ class Stage2EmbeddingSpendLedger:
     estimated_cost_usd: float = 0.0
     cache_warning: bool = False
     models: set[str] = field(default_factory=set)
+    last_request: dict[str, Any] | None = None
+    last_failure: dict[str, Any] | None = None
 
-    def record_usage(self, usage: EmbeddingBatchUsage, *, cache_warning: bool) -> None:
+    def record_usage(
+        self,
+        usage: EmbeddingBatchUsage,
+        *,
+        cache_warning: bool,
+        request_summary: dict[str, Any] | None = None,
+    ) -> None:
         self.request_count += usage.request_count
         self.input_count += usage.input_count
         self.cached_count += usage.cached_count
@@ -54,11 +63,47 @@ class Stage2EmbeddingSpendLedger:
         self.estimated_cost_usd += usage.estimated_cost_usd or 0.0
         self.cache_warning = self.cache_warning or cache_warning
         self.models.add(usage.model)
+        summary = dict(request_summary or {})
+        summary.update(
+            {
+                "status": "completed",
+                "request_id": usage.request_id,
+                "duration_ms": usage.duration_ms,
+                "cache_warning": cache_warning,
+            }
+        )
+        self.last_request = summary
+        self.last_failure = None
+
+    def record_blocked_request(self, request_summary: dict[str, Any], *, remaining_budget_usd: float | None) -> None:
+        self.blocked_request_count += 1
+        summary = dict(request_summary)
+        summary.update(
+            {
+                "status": "blocked_budget",
+                "remaining_budget_usd": remaining_budget_usd,
+            }
+        )
+        self.last_request = summary
+        self.last_failure = {
+            "category": "budget_exceeded",
+            "provider": "openai",
+            "summary": "Embedding spend cap would be exceeded by this request.",
+            "next_action": "Reuse cached embeddings or raise the Stage 2 embedding spend cap before retrying.",
+        }
+
+    def record_failure(self, failure: dict[str, Any], *, request_summary: dict[str, Any]) -> None:
+        self.failure_count += 1
+        summary = dict(request_summary)
+        summary["status"] = "failed"
+        self.last_request = summary
+        self.last_failure = copy.deepcopy(failure)
 
     def model_dump(self) -> dict[str, Any]:
         return {
             "request_count": self.request_count,
             "blocked_request_count": self.blocked_request_count,
+            "failure_count": self.failure_count,
             "input_count": self.input_count,
             "cached_count": self.cached_count,
             "miss_count": self.miss_count,
@@ -66,6 +111,8 @@ class Stage2EmbeddingSpendLedger:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cache_warning": self.cache_warning,
             "models": sorted(self.models),
+            "last_request": self.last_request,
+            "last_failure": self.last_failure,
         }
 
 
@@ -475,15 +522,36 @@ class Stage2Toolbox:
         )
         remaining_budget_usd: float | None = None
         projected_request_cost_usd = plan.usage.estimated_cost_usd
+        request_summary = {
+            "model": resolved_model,
+            "dimensions": resolved_dimensions,
+            "input_count": plan.usage.input_count,
+            "cached_count": plan.usage.cached_count,
+            "miss_count": plan.usage.miss_count,
+            "input_tokens": plan.usage.input_tokens,
+            "estimated_cost_usd": projected_request_cost_usd,
+        }
         if self.embedding_spend_cap_usd is not None:
             remaining_budget_usd = max(self.embedding_spend_cap_usd - self.embedding_spend.estimated_cost_usd, 0.0)
             if plan.usage.miss_count > 0 and projected_request_cost_usd is None:
+                failure = {
+                    "category": "budget_tracking_unsupported_model",
+                    "provider": "openai",
+                    "summary": (
+                        f"Embedding model `{resolved_model}` is not supported for spend tracking."
+                    ),
+                    "next_action": "Configure a priced embedding model or remove the Stage 2 embedding spend cap.",
+                }
+                self.embedding_spend.record_failure(failure, request_summary=request_summary)
                 raise EmbeddingError(
-                    f"Embedding model `{resolved_model}` is not supported for spend tracking; "
-                    "configure a priced embedding model or remove the total spend cap."
+                    f"Embedding request failed: {failure['summary']} Action: {failure['next_action']}",
+                    details={"failure": failure, "request": request_summary},
                 )
             if projected_request_cost_usd is not None and projected_request_cost_usd > remaining_budget_usd + 1e-9:
-                self.embedding_spend.blocked_request_count += 1
+                self.embedding_spend.record_blocked_request(
+                    request_summary,
+                    remaining_budget_usd=remaining_budget_usd,
+                )
                 cached_embeddings = [plan.cached_results[item.id] for item in plan.items if item.id in plan.cached_results]
                 return {
                     "count": len(cached_embeddings),
@@ -500,13 +568,36 @@ class Stage2Toolbox:
                         "Reuse returned cached embeddings and continue in partial analysis mode."
                     ),
                 }
-        embeddings, cache_warning, usage = execute_planned_embedding_batch(
-            plan,
-            model=resolved_model,
-            cache_path=cache_path,
-            dimensions=resolved_dimensions,
+        try:
+            embeddings, cache_warning, usage = execute_planned_embedding_batch(
+                plan,
+                model=resolved_model,
+                cache_path=cache_path,
+                dimensions=resolved_dimensions,
+            )
+        except EmbeddingError as exc:
+            failure = exc.details.get("failure") if isinstance(exc.details, dict) else None
+            if not isinstance(failure, dict):
+                failure = {
+                    "category": "unknown",
+                    "provider": "openai",
+                    "summary": str(exc),
+                    "next_action": "Inspect the embedding error details and retry once the issue is resolved.",
+                }
+            enriched_request_summary = {
+                **request_summary,
+                **(exc.details.get("request") if isinstance(exc.details, dict) and isinstance(exc.details.get("request"), dict) else {}),
+            }
+            self.embedding_spend.record_failure(failure, request_summary=enriched_request_summary)
+            raise
+        self.embedding_spend.record_usage(
+            usage,
+            cache_warning=cache_warning,
+            request_summary={
+                **request_summary,
+                "request_id": usage.request_id,
+            },
         )
-        self.embedding_spend.record_usage(usage, cache_warning=cache_warning)
         return {
             "count": len(embeddings),
             "cache_warning": cache_warning,

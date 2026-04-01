@@ -23,8 +23,16 @@ class GitDiffError(ParityError):
 class EventPayloadError(ParityError):
     """Raised when the GitHub event payload is missing or malformed."""
 
+
+@dataclass(slots=True)
 class EmbeddingError(ParityError):
     """Raised when embeddings cannot be created."""
+
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class CacheError(ParityError):

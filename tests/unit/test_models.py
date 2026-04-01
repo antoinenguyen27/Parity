@@ -101,6 +101,47 @@ def test_behavior_change_manifest_rejects_true_without_changes() -> None:
         )
 
 
+def test_behavior_change_manifest_normalizes_selector_qualified_artifact_paths() -> None:
+    manifest = BehaviorChangeManifest.model_validate(
+        {
+            "run_id": "run",
+            "pr_number": 1,
+            "commit_sha": "abc",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "has_changes": True,
+            "overall_risk": "medium",
+            "pr_intent_summary": "summary",
+            "pr_description_alignment": "confirmed",
+            "compound_change_detected": False,
+            "changes": [
+                {
+                    "artifact_path": "app/graph.py::GENERATE_PROMPT",
+                    "artifact_type": "python_variable",
+                    "artifact_class": "behavior_defining",
+                    "change_type": "modification",
+                    "inferred_intent": "Require citations",
+                    "pr_description_alignment": "confirmed",
+                    "unintended_risk_flags": [],
+                    "affected_components": [],
+                    "false_negative_risks": [],
+                    "false_positive_risks": [],
+                    "change_summary": "Added citation instruction",
+                }
+            ],
+            "compound_changes": [
+                {
+                    "artifact_paths": ["app/graph.py::GENERATE_PROMPT"],
+                    "summary": "Prompt changed",
+                }
+            ],
+        }
+    )
+
+    assert manifest.changes[0].artifact_path == "app/graph.py"
+    assert "app/graph.py::GENERATE_PROMPT" in manifest.changes[0].affected_components
+    assert manifest.compound_changes[0].artifact_paths == ["app/graph.py"]
+
+
 def test_coverage_analysis_manifest_validates_similarity_bounds() -> None:
     with pytest.raises(ValidationError):
         EvalAnalysisManifest.model_validate(

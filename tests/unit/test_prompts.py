@@ -27,6 +27,8 @@ def test_stage1_prompt_allows_unchanged_supporting_file_reads() -> None:
 
     assert "Inspect unchanged supporting files when needed" in prompt
     assert "Use Read and Glob to follow imports" in prompt
+    assert "artifact_path` must be the repo-relative file path only" in prompt
+    assert "Never append symbol selectors like `::GENERATE_PROMPT`" in prompt
 
 
 def test_stage2_prompt_includes_topology_discovery_instructions() -> None:
